@@ -38,8 +38,6 @@ import ghidra.app.events.ProgramSelectionPluginEvent;
 import ghidra.app.plugin.core.clear.ClearDialog;
 import ghidra.app.plugin.core.clear.ClearPlugin;
 import ghidra.app.plugin.core.codebrowser.CodeBrowserPlugin;
-import ghidra.app.plugin.core.navigation.GoToAddressLabelPlugin;
-import ghidra.app.plugin.core.navigation.NextPrevAddressPlugin;
 import ghidra.app.services.ProgramManager;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.program.database.ProgramBuilder;
@@ -72,23 +70,16 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 	@Before
 	public void setUp() throws Exception {
 		env = new TestEnv();
-		tool = env.getTool();
+		tool = env.launchDefaultTool();
 		setupTool(tool);
 
-		cb = env.getPlugin(CodeBrowserPlugin.class);
-
-		showTool(tool);
 		loadProgram("notepad");
 
 		cb.updateNow();
 	}
 
 	private void setupTool(PluginTool tool) throws Exception {
-		tool.addPlugin(CodeBrowserPlugin.class.getName());
-		tool.addPlugin(NextPrevAddressPlugin.class.getName());
-		tool.addPlugin(DisassemblerPlugin.class.getName());
-		tool.addPlugin(ClearPlugin.class.getName());
-		tool.addPlugin(GoToAddressLabelPlugin.class.getName());
+		cb = env.getPlugin(CodeBrowserPlugin.class);
 
 		ClearPlugin cp = getPlugin(tool, ClearPlugin.class);
 		clearAction = getAction(cp, "Clear Code Bytes");
@@ -186,7 +177,8 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 	public void testClearActionEnablement() throws Exception {
 
 		closeProgram();
-		assertTrue(!clearAction.isEnabledForContext(new ActionContext()));
+		ActionContext context = cb.getProvider().getActionContext(null);
+		assertFalse(clearAction.isEnabledForContext(context));
 
 		showTool(tool);
 		loadProgram("notepad");
@@ -194,10 +186,12 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 		waitForSwing();
 		assertTrue(cb.goToField(addr("0x10026f0"), "Address", 0, 0));
 
-		assertTrue(clearAction.isEnabled());
+		context = cb.getProvider().getActionContext(null);
+		assertTrue(clearAction.isEnabledForContext(context));
 		closeProgram();
 
-		assertTrue(!clearAction.isEnabledForContext(new ActionContext()));
+		context = cb.getProvider().getActionContext(null);
+		assertFalse(clearAction.isEnabledForContext(context));
 	}
 
 	@Test
@@ -430,8 +424,7 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 
 		Symbol[] symbols = program.getSymbolTable().getSymbols(addr("0x10022bf"));
 		Symbol s = symbols[0];
-		RenameLabelCmd cmd = new RenameLabelCmd(s.getAddress(), s.getName(), "Fred",
-			s.getParentNamespace(), SourceType.USER_DEFINED);
+		RenameLabelCmd cmd = new RenameLabelCmd(s, "Fred", SourceType.USER_DEFINED);
 		applyCmd(program, cmd);
 
 		makeSelection(tool, program, addr("0x10022bf"), addr("0x10022c4"));
@@ -463,7 +456,7 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 
 		Symbol[] symbols = program.getSymbolTable().getSymbols(addr("0x01001010"));
 		assertEquals(1, symbols.length);
-		assertTrue(!symbols[0].isDynamic());
+		assertFalse(symbols[0].isDynamic());
 		int id = program.startTransaction("Anchor");
 		symbols[0].setPinned(true);
 		program.endTransaction(id, true);
@@ -477,7 +470,7 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 
 		symbols = program.getSymbolTable().getSymbols(addr("0x01001010"));
 		assertEquals(1, symbols.length);
-		assertTrue(!symbols[0].isDynamic());
+		assertFalse(symbols[0].isDynamic());
 	}
 
 	@Test
@@ -556,7 +549,7 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 		// 1 function with it's label
 		assertEquals(6, program.getSymbolTable().getNumSymbols());
 
-		DockingActionIf action = getAction(cb, "Select All");
+		DockingActionIf action = getAction(tool, "Select All");
 		performAction(action, cb.getProvider(), true);
 
 		performAction(clearWithOptionsAction, cb.getProvider(), false);
@@ -601,7 +594,7 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 
 		assertTrue(program.getBookmarkManager().getBookmarkCount() > 0);
 
-		final DockingActionIf action = getAction(cb, "Select All");
+		final DockingActionIf action = getAction(tool, "Select All");
 		performAction(action, cb.getProvider(), true);
 
 		performAction(clearWithOptionsAction, cb.getProvider(), false);
@@ -630,7 +623,7 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 
 		assertTrue(program.getListing().getFunctions(true).hasNext());
 
-		DockingActionIf action = getAction(cb, "Select All");
+		DockingActionIf action = getAction(tool, "Select All");
 		performAction(action, cb.getProvider(), true);
 
 		performAction(clearWithOptionsAction, cb.getProvider(), false);
@@ -649,7 +642,7 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 		assertTrue(l.getNumInstructions() > 0);
 		assertTrue(l.getNumDefinedData() > 0);
 
-		assertTrue(!program.getListing().getFunctions(true).hasNext());
+		assertFalse(program.getListing().getFunctions(true).hasNext());
 
 		assertTrue(program.getSymbolTable().getNumSymbols() > 0);
 		undo(program);
@@ -684,7 +677,7 @@ public class ClearTest extends AbstractGhidraHeadedIntegrationTest {
 
 		okOnClearDialog();
 
-		assertTrue(!context.hasValueOverRange(ax, BigInteger.valueOf(5),
+		assertFalse(context.hasValueOverRange(ax, BigInteger.valueOf(5),
 			new AddressSet(addr("0x10022cc"))));
 		undo(program);
 		assertTrue(context.hasValueOverRange(ax, BigInteger.valueOf(5),

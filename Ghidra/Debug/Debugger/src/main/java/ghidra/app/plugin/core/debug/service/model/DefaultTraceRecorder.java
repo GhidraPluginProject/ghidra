@@ -80,7 +80,8 @@ public class DefaultTraceRecorder implements TraceRecorder {
 	private boolean valid = true;
 
 	public DefaultTraceRecorder(DebuggerModelServicePlugin plugin, Trace trace, TargetObject target,
-			AbstractDebuggerTargetTraceMapper mapper) {
+			DefaultDebuggerTargetTraceMapper mapper) {
+		trace.addConsumer(this);
 		this.plugin = plugin;
 		this.tool = plugin.getTool();
 		this.trace = trace;
@@ -99,9 +100,6 @@ public class DefaultTraceRecorder implements TraceRecorder {
 		this.symbolRecorder = new DefaultSymbolRecorder(this);
 		this.timeRecorder = new DefaultTimeRecorder(this);
 		this.objectManager = new TraceObjectManager(target, mapper, this);
-
-		trace.addConsumer(this);
-
 	}
 
 	/*---------------- OBJECT MANAGER METHODS -------------------*/
@@ -269,11 +267,11 @@ public class DefaultTraceRecorder implements TraceRecorder {
 
 	@Override
 	public CompletableFuture<NavigableMap<Address, byte[]>> captureProcessMemory(AddressSetView set,
-			TaskMonitor monitor) {
+			TaskMonitor monitor, boolean toMap) {
 		if (set.isEmpty()) {
 			return CompletableFuture.completedFuture(new TreeMap<>());
 		}
-		return memoryRecorder.captureProcessMemory(set, monitor);
+		return memoryRecorder.captureProcessMemory(set, monitor, toMap);
 	}
 
 	@Override
@@ -333,9 +331,7 @@ public class DefaultTraceRecorder implements TraceRecorder {
 		timeRecorder.createSnapshot(
 			"Started recording" + PathUtils.toString(target.getPath()) + " in " + target.getModel(),
 			null, null);
-		objectManager.init();
-		return AsyncUtils.NIL;
-
+		return objectManager.init();
 	}
 
 	@Override
@@ -360,9 +356,14 @@ public class DefaultTraceRecorder implements TraceRecorder {
 	}
 
 	protected void invalidate() {
-		valid = false;
 		objectManager.disposeModelListeners();
-		trace.release(this);
+		synchronized (this) {
+			if (!valid) {
+				return;
+			}
+			valid = false;
+			trace.release(this);
+		}
 	}
 
 	/*---------------- FOCUS-SUPPORT METHODS -------------------*/
@@ -421,12 +422,14 @@ public class DefaultTraceRecorder implements TraceRecorder {
 		}
 		return focusScope.requestFocus(focus).thenApply(__ -> true).exceptionally(ex -> {
 			ex = AsyncUtils.unwrapThrowable(ex);
+			String msg = "Could not focus " + focus + ": " + ex.getMessage();
+			plugin.getTool().setStatusInfo(msg);
 			if (ex instanceof DebuggerModelAccessException) {
-				String msg = "Could not focus " + focus + ": " + ex.getMessage();
 				Msg.info(this, msg);
-				plugin.getTool().setStatusInfo(msg);
 			}
-			Msg.showError(this, null, "Focus Sync", "Could not focus " + focus, ex);
+			else {
+				Msg.error(this, "Could not focus " + focus, ex);
+			}
 			return false;
 		});
 	}

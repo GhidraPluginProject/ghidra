@@ -15,7 +15,8 @@
  */
 package ghidra.app.plugin.core.navigation;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.awt.Color;
 
@@ -118,35 +119,41 @@ public class NextPrevCodeUnitPluginTest extends AbstractGhidraHeadedIntegrationT
 		Icon downIcon = ResourceManager.loadImage("images/down.png");
 
 		assertEquals(downIcon, direction.getToolBarData().getIcon());
-		assertEquals("Go To Next Instruction", nextInst.getDescription());
-		assertEquals("Go To Next Data", nextData.getDescription());
-		assertEquals("Go To Next Undefined", nextUndef.getDescription());
-		assertEquals("Go To Next Label", nextLabel.getDescription());
-		assertEquals("Go To Next Function", nextFunc.getDescription());
-		assertEquals("Go To Next Instruction Not In a Function", nextNonFunc.getDescription());
-		assertEquals("Go To Next Bookmark: All Types", nextBookmark.getDescription());
+		assertStartsWith("Go To Next Instruction", nextInst.getDescription());
+		assertStartsWith("Go To Next Data", nextData.getDescription());
+		assertStartsWith("Go To Next Undefined", nextUndef.getDescription());
+		assertStartsWith("Go To Next Label", nextLabel.getDescription());
+		assertStartsWith("Go To Next Function", nextFunc.getDescription());
+		assertStartsWith("Go To Next Instruction Not In a Function", nextNonFunc.getDescription());
+		assertStartsWith("Go To Next Bookmark: All Types", nextBookmark.getDescription());
 
 		performAction(direction, cb.getProvider(), true);
 
 		assertEquals(upIcon, direction.getToolBarData().getIcon());
-		assertEquals("Go To Previous Instruction", nextInst.getDescription());
-		assertEquals("Go To Previous Data", nextData.getDescription());
-		assertEquals("Go To Previous Undefined", nextUndef.getDescription());
-		assertEquals("Go To Previous Label", nextLabel.getDescription());
-		assertEquals("Go To Previous Function", nextFunc.getDescription());
-		assertEquals("Go To Previous Instruction Not In a Function", nextNonFunc.getDescription());
-		assertEquals("Go To Previous Bookmark: All Types", nextBookmark.getDescription());
+		assertStartsWith("Go To Previous Instruction", nextInst.getDescription());
+		assertStartsWith("Go To Previous Data", nextData.getDescription());
+		assertStartsWith("Go To Previous Undefined", nextUndef.getDescription());
+		assertStartsWith("Go To Previous Label", nextLabel.getDescription());
+		assertStartsWith("Go To Previous Function", nextFunc.getDescription());
+		assertStartsWith("Go To Previous Instruction Not In a Function",
+			nextNonFunc.getDescription());
+		assertStartsWith("Go To Previous Bookmark: All Types", nextBookmark.getDescription());
 
 		performAction(direction, cb.getProvider(), true);
 
 		assertEquals(downIcon, direction.getToolBarData().getIcon());
-		assertEquals("Go To Next Instruction", nextInst.getDescription());
-		assertEquals("Go To Next Data", nextData.getDescription());
-		assertEquals("Go To Next Undefined", nextUndef.getDescription());
-		assertEquals("Go To Next Label", nextLabel.getDescription());
-		assertEquals("Go To Next Function", nextFunc.getDescription());
-		assertEquals("Go To Next Instruction Not In a Function", nextNonFunc.getDescription());
-		assertEquals("Go To Next Bookmark: All Types", nextBookmark.getDescription());
+		assertStartsWith("Go To Next Instruction", nextInst.getDescription());
+		assertStartsWith("Go To Next Data", nextData.getDescription());
+		assertStartsWith("Go To Next Undefined", nextUndef.getDescription());
+		assertStartsWith("Go To Next Label", nextLabel.getDescription());
+		assertStartsWith("Go To Next Function", nextFunc.getDescription());
+		assertStartsWith("Go To Next Instruction Not In a Function", nextNonFunc.getDescription());
+		assertStartsWith("Go To Next Bookmark: All Types", nextBookmark.getDescription());
+	}
+
+	private static void assertStartsWith(String expected, String actual) {
+		assertTrue("startsWith expected: \"" + expected + "\", got: \"" + actual + "\"",
+			actual.startsWith(expected));
 	}
 
 	@Test
@@ -174,13 +181,13 @@ public class NextPrevCodeUnitPluginTest extends AbstractGhidraHeadedIntegrationT
 		showTool(tool);
 		assertEquals(addr("0x1001000"), cb.getCurrentAddress());
 		performAction(nextData, cb.getProvider(), true);
-		assertEquals(addr("0x10010e0"), cb.getCurrentAddress());
+		assertEquals(addr("0x1001058"), cb.getCurrentAddress());
 		performAction(nextData, cb.getProvider(), true);
-		assertEquals(addr("0x1001128"), cb.getCurrentAddress());
+		assertEquals(addr("0x1001080"), cb.getCurrentAddress());
 
 		performAction(direction, cb.getProvider(), true);
 		performAction(nextData, cb.getProvider(), true);
-		assertEquals(addr("0x10010e0"), cb.getCurrentAddress());
+		assertEquals(addr("0x1001058"), cb.getCurrentAddress());
 		performAction(nextData, cb.getProvider(), true);
 
 	}
@@ -193,15 +200,15 @@ public class NextPrevCodeUnitPluginTest extends AbstractGhidraHeadedIntegrationT
 		performAction(nextUndef, cb.getProvider(), true);
 		assertEquals(addr("0x100100c"), cb.getCurrentAddress());
 		performAction(nextUndef, cb.getProvider(), true);
-		assertEquals(addr("0x10010e4"), cb.getCurrentAddress());
+		assertEquals(addr("0x100105c"), cb.getCurrentAddress());
 
 		performAction(direction, cb.getProvider(), true);
 		performAction(nextUndef, cb.getProvider(), true);
-		assertEquals(addr("0x10010df"), cb.getCurrentAddress());
+		assertEquals(addr("0x1001057"), cb.getCurrentAddress());
 		performAction(nextUndef, cb.getProvider(), true);
 
 		// no more undefined data, this is the last range
-		assertEquals(addr("0x10010df"), cb.getCurrentAddress());
+		assertEquals(addr("0x1001057"), cb.getCurrentAddress());
 	}
 
 	@Test

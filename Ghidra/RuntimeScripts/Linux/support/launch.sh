@@ -164,7 +164,7 @@ if [ "${MODE}" = "debug" ] || [ "${MODE}" = "debug-suspend" ]; then
 		SUSPEND=y
 	fi
 	 
-	VMARG_LIST+=" -Dlog4j.configuration=\"${DEBUG_LOG4J}\""  
+	VMARG_LIST+=" -Dlog4j.configurationFile=\"${DEBUG_LOG4J}\""  
 	VMARG_LIST+=" -agentlib:jdwp=transport=dt_socket,server=y,suspend=${SUSPEND},address=${DEBUG_ADDRESS}"
 	
 
@@ -180,7 +180,7 @@ else
 fi
 
 if [ "${BACKGROUND}" = true ]; then
-	eval "\"${JAVA_CMD}\" ${VMARG_LIST} -showversion -cp \"${CPATH}\" ghidra.GhidraLauncher ${CLASSNAME} ${ARGS[@]}" &>/dev/null &
+	eval "\"${JAVA_CMD}\" ${VMARG_LIST} -showversion -cp \"${CPATH}\" ghidra.Ghidra ${CLASSNAME} ${ARGS[@]}" &>/dev/null &
 	
 	# If our process dies immediately, output something so the user knows to run in debug mode.
 	# Otherwise they'll never see any error output from background mode.
@@ -193,7 +193,7 @@ if [ "${BACKGROUND}" = true ]; then
 	fi
 	exit 0
 else
-	eval "\"${JAVA_CMD}\" ${VMARG_LIST} -showversion -cp \"${CPATH}\" ghidra.GhidraLauncher ${CLASSNAME} ${ARGS[@]}"
+	eval "\"${JAVA_CMD}\" ${VMARG_LIST} -showversion -cp \"${CPATH}\" ghidra.Ghidra ${CLASSNAME} ${ARGS[@]}"
 	exit $?
 fi
 

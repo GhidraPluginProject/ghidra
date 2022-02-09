@@ -15,8 +15,9 @@
  */
 package ghidra.program.database.code;
 
-import java.io.IOException;
 import java.util.*;
+
+import java.io.IOException;
 
 import db.*;
 import db.util.ErrorHandler;
@@ -472,8 +473,9 @@ public class CodeManager implements ErrorHandler, ManagerDB {
 					if (prototype.hasDelaySlots()) {
 						// perform bounds check on entire delay slot instruction group
 						try {
-							endAddr = startAddr.addNoWrap(prototype.getFallThroughOffset(
-								protoInstr.getInstructionContext())).previous();
+							int fallThruOffset =
+								prototype.getFallThroughOffset(protoInstr.getInstructionContext());
+							endAddr = startAddr.addNoWrap(fallThruOffset - 1);
 						}
 						catch (AddressOverflowException e) {
 							break;
@@ -553,9 +555,9 @@ public class CodeManager implements ErrorHandler, ManagerDB {
 					InstructionPrototype prototype = lastInstruction.getPrototype();
 					if (prototype.hasDelaySlots()) {
 						try {
-							maxAddr = lastInstruction.getAddress().addNoWrap(
-								prototype.getFallThroughOffset(
-									lastInstruction.getInstructionContext())).previous();
+							int fallThruOffset = prototype
+									.getFallThroughOffset(lastInstruction.getInstructionContext());
+							maxAddr = lastInstruction.getAddress().addNoWrap(fallThruOffset - 1);
 						}
 						catch (AddressOverflowException e) {
 							// ignore
@@ -630,7 +632,7 @@ public class CodeManager implements ErrorHandler, ManagerDB {
 		prototype = protoMgr.getPrototype(protoID);
 
 		Register contextReg = contextMgr.getBaseContextRegister();
-		if (contextReg != null) {
+		if (contextReg != Register.NO_CONTEXT) {
 			try {
 				RegisterValue contextValue = context.getRegisterValue(contextReg);
 				Address start = address;
@@ -2821,31 +2823,37 @@ public class CodeManager implements ErrorHandler, ManagerDB {
 	}
 
 	Address getDefinedAddressAfter(Address address) {
-		DBRecord dataRec = null;
-		DBRecord instRec = null;
+		lock.acquire();
 		try {
-			dataRec = dataAdapter.getRecordAfter(address);
-			instRec = instAdapter.getRecordAfter(address);
+			DBRecord dataRec = null;
+			DBRecord instRec = null;
+			try {
+				dataRec = dataAdapter.getRecordAfter(address);
+				instRec = instAdapter.getRecordAfter(address);
+			}
+			catch (IOException e) {
+				program.dbError(e);
+				return null;
+			}
+			if (dataRec == null && instRec == null) {
+				return null;
+			}
+			if (dataRec == null) {
+				return addrMap.decodeAddress(instRec.getKey());
+			}
+			if (instRec == null) {
+				return addrMap.decodeAddress(dataRec.getKey());
+			}
+			Address dataAddr = addrMap.decodeAddress(dataRec.getKey());
+			Address instAddr = addrMap.decodeAddress(instRec.getKey());
+			if (dataAddr.compareTo(instAddr) < 0) {
+				return dataAddr;
+			}
+			return instAddr;
 		}
-		catch (IOException e) {
-			program.dbError(e);
-			return null;
+		finally {
+			lock.release();
 		}
-		if (dataRec == null && instRec == null) {
-			return null;
-		}
-		if (dataRec == null) {
-			return addrMap.decodeAddress(instRec.getKey());
-		}
-		if (instRec == null) {
-			return addrMap.decodeAddress(dataRec.getKey());
-		}
-		Address dataAddr = addrMap.decodeAddress(dataRec.getKey());
-		Address instAddr = addrMap.decodeAddress(instRec.getKey());
-		if (dataAddr.compareTo(instAddr) < 0) {
-			return dataAddr;
-		}
-		return instAddr;
 	}
 
 	///////////////////////////////////////////////////////////////////
@@ -2989,8 +2997,8 @@ public class CodeManager implements ErrorHandler, ManagerDB {
 				boolean isFallthrough =
 					(flowType.isJump() && flowAddr.equals(inst.getMaxAddress().next()));
 				if (!isFallthrough) {
-					mnemonicPrimaryRef = addDefaultMemoryReferenceIfMissing(inst, Reference.MNEMONIC,
-						flowAddr, flowType, oldRefList, mnemonicPrimaryRef);
+					mnemonicPrimaryRef = addDefaultMemoryReferenceIfMissing(inst,
+						Reference.MNEMONIC, flowAddr, flowType, oldRefList, mnemonicPrimaryRef);
 				}
 			}
 		}
@@ -3020,8 +3028,8 @@ public class CodeManager implements ErrorHandler, ManagerDB {
 	 * @param operandPrimaryRef current preferred primary reference for operand
 	 * @return updated preferred primary address for operand (i.e., operandPrimaryRef)
 	 */
-	private Reference addDefaultMemoryReferenceIfMissing(Instruction inst,
-			int opIndex, Address refAddr, RefType refType, List<Reference> oldRefList,
+	private Reference addDefaultMemoryReferenceIfMissing(Instruction inst, int opIndex,
+			Address refAddr, RefType refType, List<Reference> oldRefList,
 			Reference operandPrimaryRef) {
 
 		Reference ref = removeOldReference(oldRefList, refAddr, opIndex, refType);
@@ -3039,12 +3047,12 @@ public class CodeManager implements ErrorHandler, ManagerDB {
 	}
 
 	/**
-	 * Remove matching DEFAULT memory reference from oldRefList
+	 * Remove matching memory reference from oldRefList (considers toAddr and opIndex only)
 	 * @param oldRefList list of existing DEFAULT memory references (may be null)
 	 * @param toAddr new reference desination address
 	 * @param opIndex new reference operand
 	 * @param refType new reference type
-	 * @return existing reference if it already exists in oldRefList, else null
+	 * @return existing reference if it already exists in oldRefList with matching refType, else null
 	 */
 	private Reference removeOldReference(List<Reference> oldRefList, Address toAddr, int opIndex,
 			RefType refType) {
@@ -3054,10 +3062,12 @@ public class CodeManager implements ErrorHandler, ManagerDB {
 		Iterator<Reference> iterator = oldRefList.iterator();
 		while (iterator.hasNext()) {
 			Reference ref = iterator.next();
-			if (opIndex == ref.getOperandIndex() && refType == ref.getReferenceType() &&
-				toAddr.equals(ref.getToAddress())) {
+			if (opIndex == ref.getOperandIndex() && toAddr.equals(ref.getToAddress())) {
 				iterator.remove();
-				return ref;
+				if (refType == ref.getReferenceType()) {
+					return ref;
+				}
+				break; // return null - can't re-use due to refType change
 			}
 		}
 		return null;
@@ -3111,11 +3121,15 @@ public class CodeManager implements ErrorHandler, ManagerDB {
 	}
 
 	int getLength(Address addr) {
+		lock.acquire();
 		try {
 			return lengthMgr.getInt(addr);
 		}
 		catch (NoValueException e) {
 			return -1;
+		}
+		finally {
+			lock.release();
 		}
 	}
 

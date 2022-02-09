@@ -98,7 +98,7 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 	 *                            created tables. 
 	 * 18-Feb-2021 - version 23   Added support for Big Reflist for tracking FROM references.
 	 *                            Primarily used for large numbers of Entry Point references.
-	 * 31-Mar-2021 - version 24   Added support for CompilerSpec extensions                          
+	 * 31-Mar-2021 - version 24   Added support for CompilerSpec extensions     
 	 */
 	static final int DB_VERSION = 24;
 
@@ -192,6 +192,7 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 	private Language language;
 	private CompilerSpec compilerSpec;
 
+	private boolean languageUpgradeRequired;
 	private LanguageID languageID;
 	private CompilerSpecID compilerSpecID;
 	private int languageVersion;
@@ -319,9 +320,12 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 			if (dbVersionExc != null) {
 				versionExc = dbVersionExc.combine(versionExc);
 			}
-			if (languageVersionExc != null && openMode != UPGRADE) {
-				// Language upgrade required
-				versionExc = languageVersionExc.combine(versionExc);
+			if (languageVersionExc != null) {
+				languageUpgradeRequired = true;
+				if (openMode != UPGRADE) {
+					// Language upgrade required
+					versionExc = languageVersionExc.combine(versionExc);
+				}
 			}
 
 			if (versionExc != null) {
@@ -336,7 +340,7 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 			if (openMode == UPGRADE) {
 				int oldVersion = getStoredVersion();
 				upgradeDatabase(monitor);
-				if (languageVersionExc != null) {
+				if (languageUpgradeRequired) {
 					try {
 						// languageUpgradeTranslator will be null for minor version upgrade
 						setLanguage(languageUpgradeTranslator, null, false, monitor);
@@ -350,6 +354,7 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 					catch (LockException e) {
 						throw new AssertException("Upgrade mode requires exclusive access");
 					}
+					languageUpgradeRequired = false;
 				}
 				postUpgrade(oldVersion, monitor);
 				changed = true;
@@ -374,6 +379,14 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 
 		// for tracking during testing
 		ProgramUtilities.addTrackedProgram(this);
+	}
+
+	/**
+	 * Determine if program initialization requires a language upgrade
+	 * @return true if language upgrade is pending
+	 */
+	public boolean isLanguageUpgradePending() {
+		return languageUpgradeRequired;
 	}
 
 	/**
@@ -819,21 +832,23 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 	 * @param oldValue the old datatype.
 	 * @param newValue the new datatype.
 	 */
-	public void dataTypeChanged(long dataTypeID, int type, boolean isAutoChange,
-			Object oldValue, Object newValue) {
+	public void dataTypeChanged(long dataTypeID, int type, boolean isAutoChange, Object oldValue,
+			Object newValue) {
 		// TODO: do not need to record type changes for packed composite change which is in repsonse
 		// to component size or alignment change.
 		if (recordChanges && !isAutoChange) {
 			((ProgramDBChangeSet) changeSet).dataTypeChanged(dataTypeID);
 		}
 		changed = true;
-		fireEvent(new ProgramChangeRecord(type, null, null, null, oldValue, newValue));
 		try {
-			managers[SYMBOL_MGR].invalidateCache(true);
+			managers[SYMBOL_MGR].invalidateCache(true); // needed for function variable/param invalidation
+			managers[FUNCTION_MGR].invalidateCache(true); // needed for auto-param invalidation
+			managers[CODE_MGR].invalidateCache(true); // needed for data invalidation
 		}
 		catch (IOException e) {
 			dbError(e);
 		}
+		fireEvent(new ProgramChangeRecord(type, null, null, null, oldValue, newValue));
 	}
 
 	/**
@@ -2060,7 +2075,7 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 					Msg.info(this,
 						"Updating language version for Program " + getName() + ": " +
 							language.getLanguageDescription() + " (Version " +
-							language.getVersion() + ")");
+							language.getVersion() + "." + language.getMinorVersion());
 				}
 
 				if (newCompilerSpecID != null) {
@@ -2174,7 +2189,7 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 
 		ProgramContext context = getProgramContext();
 		Register contextReg = context.getBaseContextRegister();
-		if (contextReg == null) {
+		if (contextReg == Register.NO_CONTEXT) {
 			return;
 		}
 		Register thumbBitReg = context.getRegister("TMode");

@@ -24,8 +24,7 @@ import java.awt.event.KeyEvent;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.net.*;
-import java.util.ArrayList;
-import java.util.Iterator;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -42,16 +41,18 @@ import docking.actions.KeyBindingUtils;
 import docking.tool.ToolConstants;
 import docking.tool.util.DockingToolConstants;
 import docking.widgets.OptionDialog;
+import docking.widgets.dialogs.NumberRangeInputDialog;
 import docking.widgets.tree.GTreeNode;
 import ghidra.app.context.ProgramActionContext;
 import ghidra.app.plugin.core.compositeeditor.ApplyAction;
 import ghidra.app.plugin.core.compositeeditor.CompositeEditorTableAction;
-import ghidra.app.plugin.core.datamgr.actions.CreateTypeDefDialog;
+import ghidra.app.plugin.core.datamgr.actions.*;
 import ghidra.app.plugin.core.datamgr.archive.Archive;
 import ghidra.app.plugin.core.datamgr.archive.DataTypeManagerHandler;
 import ghidra.app.plugin.core.datamgr.tree.*;
 import ghidra.app.plugin.core.function.AbstractEditFunctionSignatureDialog;
 import ghidra.app.plugin.core.programtree.ProgramTreePlugin;
+import ghidra.app.services.DataTypeManagerService;
 import ghidra.app.services.ProgramManager;
 import ghidra.app.util.datatype.DataTypeSelectionEditor;
 import ghidra.framework.options.ToolOptions;
@@ -61,10 +62,9 @@ import ghidra.program.database.ProgramBuilder;
 import ghidra.program.database.ProgramDB;
 import ghidra.program.database.data.ProgramDataTypeManager;
 import ghidra.program.model.data.*;
-import ghidra.test.*;
-import ghidra.util.classfinder.ClassFilter;
-import ghidra.util.classfinder.ClassSearcher;
-import ghidra.util.task.TaskMonitor;
+import ghidra.test.AbstractGhidraHeadedIntegrationTest;
+import ghidra.test.TestEnv;
+import util.CollectionUtils;
 import utilities.util.FileUtilities;
 
 /**
@@ -74,10 +74,11 @@ import utilities.util.FileUtilities;
 
 public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTest {
 	private static final String BUILTIN_NAME = "BuiltInTypes";
-	private static final String PROGRAM_FILENAME = "notepad";
+	private static final String PROGRAM_FILENAME = "sample";
 
 	private TestEnv env;
 	private PluginTool tool;
+	private ProgramBuilder builder;
 	private ProgramDB program;
 	private DataTypeManagerPlugin plugin;
 	private DataTypeArchiveGTree tree;
@@ -112,6 +113,9 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		treeContext = new DataTypesActionContext(provider, program, tree, null);
 
 		removeDistractingPlugins();
+
+		cutAction = getAction(plugin, "Copy");
+		pasteAction = getAction(plugin, "Paste");
 	}
 
 	private void removeDistractingPlugins() {
@@ -122,7 +126,7 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 	}
 
 	private ProgramDB buildProgram() throws Exception {
-		ProgramBuilder builder = new ProgramBuilder("notepad", ProgramBuilder._TOY, this);
+		builder = new ProgramBuilder("sample", ProgramBuilder._TOY, this);
 
 		builder.createMemory(".text", "0x1001000", 0x100);
 		CategoryPath miscPath = new CategoryPath("/MISC");
@@ -228,13 +232,13 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		DockingActionIf action = getAction(plugin, "New Category");
 		assertTrue(action.isEnabledForContext(treeContext));
 
-		// select "New Category" action
+		// select "New Category" action (allowed with filter in place)
 		DataTypeTestUtils.performAction(action, tree, false);
 
-		waitForDialogComponent("Cannot Edit Tree Node");
+//		DialogComponentProvider dialog = waitForDialogComponent("Cannot Edit Tree Node");
+//		close(dialog);
 
-		// verify that  the tree opens a new node with the default
-		// category name is "New Category"
+		// verify that  the tree opens a new node with the default category name is "New Category"
 		assertEquals(childCount + 1, miscNode.getChildCount());
 		GTreeNode node = miscNode.getChild("New Category");
 		assertNotNull(node);
@@ -349,10 +353,12 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		waitForTree();
 
 		// make sure the new node is selected
-		TreePath[] selectionPaths = tree.getSelectionPaths();
-		assertNotNull(selectionPaths);
-		assertEquals(1, selectionPaths.length);
+		waitFor(() -> {
+			TreePath[] selectionPaths = tree.getSelectionPaths();
+			return selectionPaths != null && selectionPaths.length == 1;
+		});
 
+		TreePath[] selectionPaths = tree.getSelectionPaths();
 		CategoryNode newMiscNode = (CategoryNode) programNode.getChild(newCategoryName);
 		GTreeNode selectedNode = (GTreeNode) selectionPaths[0].getLastPathComponent();
 		assertEquals(newMiscNode, selectedNode);
@@ -374,6 +380,45 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 
 		assertNull(programNode.getChild(miscNodeName));
 		assertNotNull(programNode.getChild(newCategoryName));
+	}
+
+	@Test
+	public void testRenameDataTypeWithSameNameAsCategory() throws Exception {
+		// select a category
+		expandNode(programNode);
+		String miscNodeName = "MISC";
+		final CategoryNode miscNode = (CategoryNode) programNode.getChild(miscNodeName);
+		assertNotNull(miscNode);
+		StructureDataType struct = new StructureDataType("MISC", 0);
+		struct.add(new DWordDataType());
+		builder.addDataType(struct);
+		waitForTree();
+		DataType resolved = program.getDataTypeManager().resolve(struct, null);
+		DataTypeNode node = programNode.getNode(resolved);
+		selectNode(node);
+
+		final DockingActionIf action = getAction(plugin, "Rename");
+		assertTrue(action.isEnabledForContext(treeContext));
+
+		// select "Rename" action
+		final String newDatatypeName = "ItWorked";
+		DataTypeTestUtils.performAction(action, tree);
+		waitForTree();
+		runSwing(() -> {
+			int rowForPath = jTree.getRowForPath(miscNode.getTreePath());
+
+			DefaultTreeCellEditor cellEditor = (DefaultTreeCellEditor) tree.getCellEditor();
+			Container container = (Container) cellEditor.getTreeCellEditorComponent(jTree, miscNode,
+				true, true, true, rowForPath);
+			JTextField textField = (JTextField) container.getComponent(0);
+
+			textField.setText(newDatatypeName);
+			jTree.stopEditing();
+		});
+		waitForProgram();
+		waitForTree();
+
+		assertEquals("ItWorked", resolved.getName());
 	}
 
 	@Test
@@ -547,8 +592,6 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		selectNode(myStructNode);
 
 		DockingActionIf copyAction = getAction(plugin, "Copy");
-		cutAction = getAction(plugin, "Cut");
-		pasteAction = getAction(plugin, "Paste");
 
 		assertTrue(cutAction.isEnabledForContext(treeContext));
 		assertTrue(copyAction.isEnabledForContext(treeContext));
@@ -574,8 +617,6 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		selectNode(cat2Node);
 
 		DockingActionIf copyAction = getAction(plugin, "Copy");
-		cutAction = getAction(plugin, "Cut");
-		pasteAction = getAction(plugin, "Paste");
 
 		assertTrue(cutAction.isEnabledForContext(treeContext));
 		assertTrue(copyAction.isEnabledForContext(treeContext));
@@ -620,7 +661,7 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 
 		toggleDetailedSearch(true);
 		assertSingleFilterMatch(
-			new String[] { "Data Types", "notepad", "Category1", "Category2", "MyStruct" });
+			new String[] { "Data Types", "sample", "Category1", "Category2", "MyStruct" });
 	}
 
 	@Test
@@ -659,52 +700,6 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		assertFalse(action.isSelected());
 		action = (ToggleDockingActionIf) getAction(plugin, "Filter Pointers");
 		assertFalse(action.isSelected());
-	}
-
-	@Test
-	public void testRefreshBuiltins() throws Exception {
-		GTreeNode treeRoot = tree.getModelRoot();
-		GTreeNode builtInNode = treeRoot.getChild("BuiltInTypes");
-
-		assertNull("Test setup Error: ghidra.app.test.TestDataType was not removed!",
-			builtInNode.getChild("TestDataType"));
-
-		compileJavaFile();
-
-		DockingActionIf action = getAction(plugin, "Refresh BuiltInTypes");
-		assertTrue(action.isEnabledForContext(treeContext));
-		DataTypeTestUtils.performAction(action, tree, false);
-
-		waitForTasks();
-
-		waitForProgram();
-
-		waitForActionToBeEnabled(action);
-
-		builtInNode = treeRoot.getChild("BuiltInTypes");
-		assertNotNull(builtInNode.getChild("TestDataType"));
-
-		ClassFilter filter = new BuiltInDataTypeClassExclusionFilter();
-		ArrayList<DataType> listOne =
-			new ArrayList<>(ClassSearcher.getInstances(BuiltInDataType.class, filter));
-
-		DataTypeManager bdtm = plugin.getBuiltInDataTypesManager();
-		ArrayList<DataType> listTwo = new ArrayList<>();
-		Iterator<DataType> iter = bdtm.getAllDataTypes();
-		while (iter.hasNext()) {
-			DataType dt = iter.next();
-			listTwo.add(dt);
-		}
-		for (DataType dt : listOne) {
-			boolean found = false;
-			for (DataType dt2 : listTwo) {
-				if (dt.isEquivalent(dt2)) {
-					found = true;
-					break;
-				}
-			}
-			assertTrue(found);
-		}
 	}
 
 	@Test
@@ -793,9 +788,193 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		assertNotNull(message, action);
 	}
 
+	@Test
+	public void testAction_FindStructureByOffset() {
+
+		DockingActionIf action = getAction(plugin, FindStructuresByOffsetAction.NAME);
+		performAction(action, false);
+
+		NumberRangeInputDialog dialog = waitForDialogComponent(NumberRangeInputDialog.class);
+		setText(dialog, "0x1");
+
+		pressButtonByText(dialog, "OK");
+
+		DataTypesProvider resultsProvider =
+			waitForComponentProvider(DataTypesProvider.class, FindStructuresByOffsetAction.NAME);
+		assertMatchingStructures(resultsProvider, "ArrayStruct");
+	}
+
+	@Test
+	public void testAction_FindStructureByOffset_NoMatches() {
+
+		DockingActionIf action = getAction(plugin, FindStructuresByOffsetAction.NAME);
+		performAction(action, false);
+
+		NumberRangeInputDialog dialog = waitForDialogComponent(NumberRangeInputDialog.class);
+		setText(dialog, "0x100");
+
+		pressButtonByText(dialog, "OK");
+
+		DataTypesProvider resultsProvider =
+			waitForComponentProvider(DataTypesProvider.class, FindStructuresByOffsetAction.NAME);
+		assertMatchingStructures(resultsProvider);
+	}
+
+	@Test
+	public void testAction_FindStructureByOffset_Range() {
+
+		DockingActionIf action = getAction(plugin, FindStructuresByOffsetAction.NAME);
+		performAction(action, false);
+
+		NumberRangeInputDialog dialog = waitForDialogComponent(NumberRangeInputDialog.class);
+		setText(dialog, "0x1:0x3,20");
+
+		pressButtonByText(dialog, "OK");
+
+		DataTypesProvider resultsProvider =
+			waitForComponentProvider(DataTypesProvider.class, FindStructuresByOffsetAction.NAME);
+		assertMatchingStructures(resultsProvider, "ArrayStruct");
+	}
+
+	@Test
+	public void testAction_FindStructureByOffset_MixedInput() {
+
+		createStructureWithOffset_0x4(); // 0x4
+		createStructureWithOffset_0x8(); // 0x4, 0x8
+		createStructureWithOffset_0x10(); // 0x4, 0x8, 0x10
+		createStructureWithOffset_0x20(); // 0x8, 0x16, 0x20
+
+		DockingActionIf action = getAction(plugin, FindStructuresByOffsetAction.NAME);
+		performAction(action, false);
+
+		NumberRangeInputDialog dialog = waitForDialogComponent(NumberRangeInputDialog.class);
+		setText(dialog, "0x8:0x10, 32");
+
+		pressButtonByText(dialog, "OK");
+
+		DataTypesProvider resultsProvider =
+			waitForComponentProvider(DataTypesProvider.class, FindStructuresByOffsetAction.NAME);
+		assertMatchingStructures(resultsProvider, "Structure_0x8", "Structure_0x10",
+			"Structure_0x20");
+	}
+
+	@Test
+	public void testAction_FindStructureBySize() {
+
+		createStructureWithOffset_0x4(); // 6
+		createStructureWithOffset_0x8(); // 10
+		createStructureWithOffset_0x10(); // 12
+		createStructureWithOffset_0x20(); // 22
+
+		DockingActionIf action = getAction(plugin, FindStructuresBySizeAction.NAME);
+		performAction(action, false);
+
+		NumberRangeInputDialog dialog = waitForDialogComponent(NumberRangeInputDialog.class);
+		setText(dialog, "10");
+
+		pressButtonByText(dialog, "OK");
+
+		DataTypesProvider resultsProvider =
+			waitForComponentProvider(DataTypesProvider.class, FindStructuresBySizeAction.NAME);
+		assertMatchingStructures(resultsProvider, "Structure_0x8");
+	}
+
+	@Test
+	public void testAction_FindStructureBySize_Ranage() {
+
+		createStructureWithOffset_0x4(); // 6
+		createStructureWithOffset_0x8(); // 10
+		createStructureWithOffset_0x10(); // 12
+		createStructureWithOffset_0x20(); // 22
+
+		DockingActionIf action = getAction(plugin, FindStructuresBySizeAction.NAME);
+		performAction(action, false);
+
+		NumberRangeInputDialog dialog = waitForDialogComponent(NumberRangeInputDialog.class);
+		setText(dialog, "12:22");
+
+		pressButtonByText(dialog, "OK");
+
+		DataTypesProvider resultsProvider =
+			waitForComponentProvider(DataTypesProvider.class, FindStructuresBySizeAction.NAME);
+		assertMatchingStructures(resultsProvider, "Structure_0x10", "Structure_0x20");
+	}
+
+	@Test
+	public void testGetSelectedDatatypesFromService() {
+		DataTypeManagerService dataTypeManagerService =
+			tool.getService(DataTypeManagerService.class);
+
+		assertEquals(0, dataTypeManagerService.getSelectedDatatypes().size());
+
+		CategoryPath path = new CategoryPath("/MISC");
+		DataType dt1 = program.getDataTypeManager().getDataType(path, "ArrayStruct");
+		DataType dt2 = program.getDataTypeManager().getDataType(path, "ArrayUnion");
+
+		selectDataTypes(dt1, dt2);
+
+		List<DataType> selectedDatatypes = dataTypeManagerService.getSelectedDatatypes();
+		assertEquals(2, selectedDatatypes.size());
+		assertTrue(selectedDatatypes.contains(dt1));
+		assertTrue(selectedDatatypes.contains(dt2));
+	}
+
 //==================================================================================================
 // Private methods
 //==================================================================================================
+	private void selectDataTypes(DataType dt1, DataType dt2) {
+		String catName1 = dt1.getCategoryPath().getName(); // assumes path is only 1 level
+		CategoryNode cat1 = (CategoryNode) programNode.getChild(catName1);
+		DataTypeNode node1 = cat1.getNode(dt1);
+
+		String catName2 = dt2.getCategoryPath().getName(); // assumes path is only 1 level
+		CategoryNode cat2 = (CategoryNode) programNode.getChild(catName2);
+		DataTypeNode node2 = cat2.getNode(dt2);
+
+		tree.setSelectedNodes(node1, node2);
+		waitForTree(tree);
+	}
+
+	private void createStructureWithOffset_0x4() {
+
+		StructureDataType stuct = new StructureDataType("Structure_0x4", 0);
+		stuct.add(new DWordDataType());
+		stuct.add(new WordDataType());
+		builder.addDataType(stuct);
+	}
+
+	private void createStructureWithOffset_0x8() {
+
+		StructureDataType stuct = new StructureDataType("Structure_0x8", 0);
+		stuct.add(new DWordDataType());
+		stuct.add(new DWordDataType());
+		stuct.add(new WordDataType());
+		builder.addDataType(stuct);
+	}
+
+	private void createStructureWithOffset_0x10() {
+
+		StructureDataType stuct = new StructureDataType("Structure_0x10", 0);
+		stuct.add(new DWordDataType());
+		stuct.add(new DWordDataType());
+		stuct.add(new WordDataType());
+		stuct.add(new WordDataType());
+		builder.addDataType(stuct);
+	}
+
+	private void createStructureWithOffset_0x20() {
+
+		StructureDataType stuct = new StructureDataType("Structure_0x20", 0);
+		stuct.add(new QWordDataType());
+		stuct.add(new QWordDataType());
+		stuct.add(new DWordDataType());
+		stuct.add(new WordDataType());
+		builder.addDataType(stuct);
+	}
+
+	private void setText(NumberRangeInputDialog dialog, String text) {
+		runSwing(() -> dialog.setValue(text));
+	}
 
 	private void editSignature(String name, String newSignature) {
 		expandNode(programNode);
@@ -916,6 +1095,41 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		}
 	}
 
+	private void assertMatchingStructures(DataTypesProvider resultsProvider, String... names) {
+
+		DataTypeArchiveGTree gTree = resultsProvider.getGTree();
+		waitForTree(gTree);
+		Map<String, Structure> structures = getStructures(resultsProvider);
+		assertEquals("Incorrect number of matches.\n\tExpected: " + Arrays.toString(names) +
+			"\n\tFound: " + structures.keySet(), names.length, structures.size());
+		for (String name : names) {
+			if (!structures.containsKey(name)) {
+				fail("Structure not found in results: '" + name + "'.\nFound: " +
+					structures.keySet());
+			}
+		}
+	}
+
+	private Map<String, Structure> getStructures(DataTypesProvider resultsProvider) {
+
+		Map<String, Structure> map = new HashMap<>();
+		DataTypeArchiveGTree gTree = resultsProvider.getGTree();
+		GTreeNode rootNode = gTree.getViewRoot();
+		Iterator<GTreeNode> it = rootNode.iterator(true);
+		for (GTreeNode node : CollectionUtils.asIterable(it)) {
+			if (!(node instanceof DataTypeNode)) {
+				continue;
+			}
+			DataTypeNode dtNode = (DataTypeNode) node;
+			DataType dt = dtNode.getDataType();
+			if (dt instanceof Structure) {
+				map.put(dt.getName(), (Structure) dt);
+			}
+		}
+
+		return map;
+	}
+
 	private void assertEmptyTree() {
 		final GTreeNode rootNode = tree.getViewRoot();
 		final Integer[] box = new Integer[1];
@@ -943,18 +1157,6 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		ToggleDockingActionIf toggleAction = (ToggleDockingActionIf) filterPointersAction;
 		setToggleActionSelected(toggleAction, treeContext, false);
 		waitForTree();
-	}
-
-	private void waitForActionToBeEnabled(DockingActionIf action) {
-		int numWaits = 0;
-		while (!action.isEnabled() && ++numWaits < 50) {
-			try {
-				Thread.sleep(100);
-			}
-			catch (InterruptedException e) {
-				// don't care; will try again
-			}
-		}
 	}
 
 	private void undo() throws Exception {
@@ -1030,7 +1232,7 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 	}
 
 	/**
-	 * This directory is bin in eclipse; it will be a resources directory in the classpath when run 
+	 * This directory is bin in eclipse; it will be a resources directory in the classpath when run
 	 * in batch mode.   The directory is one specifically created by and for this test.
 	 * @return class output directory
 	 * @throws FileNotFoundException Could not find class output directory
@@ -1058,33 +1260,6 @@ public class DataTypeManagerPluginTest extends AbstractGhidraHeadedIntegrationTe
 		}
 		catch (FileNotFoundException e) {
 			System.err.println("Unable to delete test dir?: " + e.getMessage());
-		}
-	}
-
-	private void compileJavaFile() throws Exception {
-
-		boolean success = false;
-		try {
-			File file = getTestDataTypeFile();
-			File binDir = getClassesDirectory();
-			if (!binDir.exists()) {
-				if (!binDir.mkdir()) {
-					Assert.fail("Could not create directory " + binDir.getAbsolutePath());
-				}
-			}
-			File javaFile = new File(binDir, "TestDataType.java");
-
-			FileUtilities.copyFile(file, javaFile, false, TaskMonitor.DUMMY);
-			assertTrue(javaFile.exists());
-
-			JavaCompiler j = new JavaCompiler();
-			j.compile(javaFile);
-			success = true;
-		}
-		finally {
-			if (!success) {
-				removeBinTestDir();
-			}
 		}
 	}
 

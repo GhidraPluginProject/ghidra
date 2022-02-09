@@ -4,9 +4,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -414,11 +414,11 @@ public class ProgramBigListingModel implements ListingModel, FormatModelListener
 					}
 				}
 			}
-			else { // Structure
+			else { // Structure and DynamicDataType
 				List<Data> dataList = data.getComponentsContaining((int) addr.subtract(dataAddr));
-				if (dataList != null) {  // nested flex-arrays can cause odd behavior
+				if (dataList != null) {
 					for (Data subData : dataList) {
-						// The only case where more than one subData exists is for bit-fields.
+						// The only case where more than one subData exists is for bit-fields and zero-length data.
 						// Depending upon the packing, bit-fields at different offsets may overlap
 						if (subData.getMinAddress().equals(addr)) {
 							list.add(subData);

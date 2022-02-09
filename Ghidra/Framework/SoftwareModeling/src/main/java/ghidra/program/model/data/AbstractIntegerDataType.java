@@ -16,20 +16,24 @@
 package ghidra.program.model.data;
 
 import java.math.BigInteger;
+import java.nio.charset.MalformedInputException;
+import java.nio.charset.UnmappableCharacterException;
 
 import ghidra.docking.settings.*;
+import ghidra.pcode.utils.Utils;
+import ghidra.program.model.data.StringRenderParser.StringParseException;
 import ghidra.program.model.mem.MemBuffer;
 import ghidra.program.model.scalar.Scalar;
 import ghidra.util.StringFormat;
 import utilities.util.ArrayUtilities;
 
 /**
- * Base type for integer data types such as {@link CharDataType chars}, {@link IntegerDataType ints},
- * and {@link LongDataType longs}.
+ * Base type for integer data types such as {@link CharDataType chars}, {@link IntegerDataType
+ * ints}, and {@link LongDataType longs}.
  * <p>
  * If {@link FormatSettingsDefinition#getFormat(Settings)} indicates that this is a
- * {@link FormatSettingsDefinition#CHAR CHAR} type, the {@link ArrayStringable} methods will
- * treat an array of this data type as a string.
+ * {@link FormatSettingsDefinition#CHAR CHAR} type, the {@link ArrayStringable} methods will treat
+ * an array of this data type as a string.
  */
 public abstract class AbstractIntegerDataType extends BuiltIn implements ArrayStringable {
 
@@ -56,6 +60,7 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 
 	/**
 	 * Constructor
+	 * 
 	 * @param name a unique signed/unsigned data-type name (also used as the mnemonic)
 	 * @param signed true if signed, false if unsigned
 	 * @param dtm data-type manager whose data organization should be used
@@ -66,11 +71,10 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 	}
 
 	/**
-	 * Return the Format settings definition included in the settings
-	 * definition array
+	 * Return the Format settings definition included in the settings definition array
+	 * 
 	 * @see #getSettingsDefinitions()
-	 * @return Format settings definition included in the settings
-	 * definition array
+	 * @return Format settings definition included in the settings definition array
 	 */
 	protected FormatSettingsDefinition getFormatSettingsDefinition() {
 		return FormatSettingsDefinition.DEF_HEX;
@@ -106,17 +110,15 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 	}
 
 	/**
-	 * @return the Assembly style data-type declaration
-	 * for this data-type.
+	 * @return the Assembly style data-type declaration for this data-type.
 	 */
 	public String getAssemblyMnemonic() {
 		return name;
 	}
 
 	/**
-	 * @return the C style data-type mnemonic
-	 * for this data-type.
-	 * NOTE: currently the same as getCDeclaration().
+	 * @return the C style data-type mnemonic for this data-type. NOTE: currently the same as
+	 *         getCDeclaration().
 	 */
 	public String getCMnemonic() {
 		String str = getCDeclaration();
@@ -124,9 +126,8 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 	}
 
 	/**
-	 * @return the C style data-type declaration
-	 * for this data-type.  Null is returned if
-	 * no appropriate declaration exists.
+	 * @return the C style data-type declaration for this data-type. Null is returned if no
+	 *         appropriate declaration exists.
 	 */
 	public String getCDeclaration() {
 		int size = getLength();
@@ -187,6 +188,88 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 		return new Scalar(size * 8, val, isSigned());
 	}
 
+	/**
+	 * Get the number of bits in the integral type
+	 * 
+	 * @param type the type
+	 * @return the number of bits
+	 */
+	protected static int getBitCount(Class<? extends Number> type) {
+		if (type == Byte.class) {
+			return Byte.SIZE;
+		}
+		if (type == Short.class) {
+			return Short.SIZE;
+		}
+		if (type == Integer.class) {
+			return Integer.SIZE;
+		}
+		if (type == Long.class) {
+			return Long.SIZE;
+		}
+		throw new AssertionError();
+	}
+
+	protected BigInteger castValueToEncode(Object value) throws DataTypeEncodeException {
+		if (value instanceof BigInteger) {
+			return (BigInteger) value;
+		}
+		if (value instanceof Scalar) {
+			// I'll take the scalar's signedness and neglect this type's....
+			return ((Scalar) value).getBigInteger();
+		}
+		if (value instanceof Character) {
+			int numeric = Character.getNumericValue((Character) value);
+			if (numeric < 0) {
+				throw new DataTypeEncodeException("Character cannot be converted to number", value,
+					this);
+			}
+			return BigInteger.valueOf(numeric);
+		}
+		if (value instanceof Byte || value instanceof Short || value instanceof Integer ||
+			value instanceof Long) {
+			Number number = (Number) value;
+			BigInteger signedVal = BigInteger.valueOf(number.longValue());
+			if (isSigned() || signedVal.signum() >= 0) {
+				return signedVal;
+			}
+			return signedVal.add(BigInteger.ONE.shiftLeft(getBitCount(number.getClass())));
+		}
+		throw new DataTypeEncodeException("Unsupported value type", value, this);
+	}
+
+	@Override
+	public boolean isEncodable() {
+		return true;
+	}
+
+	@Override
+	public byte[] encodeValue(Object value, MemBuffer buf, Settings settings, int length)
+			throws DataTypeEncodeException {
+		if (length == -1) {
+			length = getLength();
+		}
+		if (length != getLength()) {
+			throw new DataTypeEncodeException("Length mismatch", value, this);
+		}
+		BigInteger bigValue = castValueToEncode(value);
+		if (bigValue.signum() == -1 && !isSigned()) {
+			throw new DataTypeEncodeException("Unsigned type cannot have negative value", value,
+				this);
+		}
+		BigInteger maxValueExclusive = BigInteger.ONE.shiftLeft(length * 8 - (isSigned() ? 1 : 0));
+		BigInteger minValueInclusive = isSigned()
+				? BigInteger.ONE.shiftLeft(length * 8 - 1).negate()
+				: BigInteger.ZERO;
+		if (bigValue.compareTo(maxValueExclusive) >= 0) {
+			throw new DataTypeEncodeException("Value is too large", bigValue, this);
+		}
+		if (minValueInclusive.compareTo(bigValue) > 0) {
+			throw new DataTypeEncodeException("Value is too small", bigValue, this);
+		}
+		return Utils.bigIntegerToBytes(bigValue, length, ENDIAN.isBigEndian(settings, buf));
+	}
+
 	@Override
 	public Class<?> getValueClass(Settings settings) {
 		if (getLength() > 8) {
@@ -227,7 +310,8 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 	/**
 	 * Get integer representation of the big-endian value.
 	 * <p>
-	 * Does not handle CHAR format, use {@link StringDataInstance#getCharRepresentation(DataType, byte[], Settings)}
+	 * Does not handle CHAR format, use
+	 * {@link StringDataInstance#getCharRepresentation(DataType, byte[], Settings)}
 	 * 
 	 * @param bigInt BigInteger value with the appropriate sign
 	 * @param settings integer format settings (PADDING, FORMAT, etc.)
@@ -275,6 +359,71 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 	}
 
 	@Override
+	public byte[] encodeRepresentation(String repr, MemBuffer buf, Settings settings, int length)
+			throws DataTypeEncodeException {
+		int format = getFormatSettingsDefinition().getFormat(settings);
+		BigInteger value;
+		int radix;
+		String suffix;
+		switch (format) {
+			case FormatSettingsDefinition.CHAR:
+				StringDataInstance sdi =
+					StringDataInstance.getStringDataInstance(this, buf, settings, getLength());
+				try {
+					return sdi.encodeReplacementFromCharRepresentation(repr);
+				}
+				catch (MalformedInputException | UnmappableCharacterException
+						| StringParseException e) {
+					throw new DataTypeEncodeException(repr, this, e);
+				}
+			case FormatSettingsDefinition.HEX:
+				radix = 16;
+				suffix = "h";
+				break;
+			case FormatSettingsDefinition.DECIMAL:
+				radix = 10;
+				suffix = "";
+				break;
+			case FormatSettingsDefinition.BINARY:
+				radix = 2;
+				suffix = "b";
+				break;
+			case FormatSettingsDefinition.OCTAL:
+				radix = 8;
+				suffix = "o";
+				break;
+			default:
+				throw new AssertionError();
+		}
+
+		if (!repr.endsWith(suffix)) {
+			throw new DataTypeEncodeException("value must have " + suffix + " suffix", repr, this);
+		}
+		try {
+			value = new BigInteger(repr.substring(0, repr.length() - suffix.length()), radix);
+		}
+		catch (Exception e) {
+			throw new DataTypeEncodeException(repr, this, e);
+		}
+
+		/**
+		 * Ghidra doesn't actually heed signedness unless the format is DECIMAL. Thus, for user
+		 * input, and to make this an inverse of getRepresentation, we'll adjust values between SMAX
+		 * and UMAX to ensure they get encoded as expected, rather than rejected. We'll still accept
+		 * signed values, though, since the user would rightly expect those to work, even though
+		 * it'll get echoed back in unsigned form.
+		 */
+		if (format != FormatSettingsDefinition.DECIMAL && isSigned()) {
+			BigInteger umax = BigInteger.ONE.shiftLeft(8 * length);
+			BigInteger smax = umax.shiftRight(1);
+			if (smax.compareTo(value) <= 0 && value.compareTo(umax) < 0) {
+				value = value.subtract(umax);
+			}
+		}
+		return encodeValue(value, buf, settings, length);
+	}
+
+	@Override
 	public boolean hasStringValue(Settings settings) {
 		int format = getFormatSettingsDefinition().getFormat(settings);
 		return format == FormatSettingsDefinition.CHAR;
@@ -305,9 +454,8 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 	}
 
 	/**
-	 * @return the data-type with the opposite signedness from
-	 * this data-type.  For example, this method on IntegerDataType will
-	 * return an instance of UnsignedIntegerDataType.
+	 * @return the data-type with the opposite signedness from this data-type. For example, this
+	 *         method on IntegerDataType will return an instance of UnsignedIntegerDataType.
 	 */
 	public abstract AbstractIntegerDataType getOppositeSignednessDataType();
 
@@ -320,9 +468,9 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 	private static AbstractIntegerDataType[] unsignedTypes;
 
 	/**
-	 * An "map" of the first 8 (by size) signed integer data types, where
-	 * the element at index <code>i</code> points to the datatype of size <code>i+1</code>,
-	 * with additional types with no size restriction appended after the first 8.
+	 * An "map" of the first 8 (by size) signed integer data types, where the element at index
+	 * <code>i</code> points to the datatype of size <code>i+1</code>, with additional types with no
+	 * size restriction appended after the first 8.
 	 *
 	 * @return array of all signed integer types (char and bool types excluded)
 	 */
@@ -338,9 +486,9 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 	}
 
 	/**
-	 * An "map" of the first 8 (by size) unsigned integer data types, where
-	 * the element at index <code>i</code> points to the datatype of size <code>i+1</code>,
-	 * with additional types with no size restriction appended after the first 8.
+	 * An "map" of the first 8 (by size) unsigned integer data types, where the element at index
+	 * <code>i</code> points to the datatype of size <code>i+1</code>, with additional types with no
+	 * size restriction appended after the first 8.
 	 *
 	 * @return array of all unsigned integer types (char and bool types excluded)
 	 */
@@ -357,10 +505,11 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 
 	/**
 	 * Get a Signed Integer data-type instance of the requested size
-	 * @param size data type size, sizes greater than 8 (and other than 16)
-	 * will cause an SignedByteDataType[size] (i.e., Array) to be returned.
-	 * @param dtm optional program data-type manager, if specified
-	 * a generic data-type will be returned if possible.
+	 * 
+	 * @param size data type size, sizes greater than 8 (and other than 16) will cause an
+	 *            SignedByteDataType[size] (i.e., Array) to be returned.
+	 * @param dtm optional program data-type manager, if specified a generic data-type will be
+	 *            returned if possible.
 	 * @return signed integer data type
 	 */
 	public static DataType getSignedDataType(int size, DataTypeManager dtm) {
@@ -395,8 +544,9 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 
 	/**
 	 * Returns all built-in signed integer data-types.
-	 * @param dtm optional program data-type manager, if specified
-	 * generic data-types will be returned in place of fixed-sized data-types.
+	 * 
+	 * @param dtm optional program data-type manager, if specified generic data-types will be
+	 *            returned in place of fixed-sized data-types.
 	 * @return array of all signed integer types (char and bool types excluded)
 	 */
 	public static AbstractIntegerDataType[] getSignedDataTypes(DataTypeManager dtm) {
@@ -427,10 +577,11 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 
 	/**
 	 * Get a Unsigned Integer data-type instance of the requested size
-	 * @param size data type size, sizes greater than 8 (and other than 16)
-	 * will cause an undefined type to be returned.
-	 * @param dtm optional program data-type manager, if specified
-	 * a generic data-type will be returned if possible.
+	 * 
+	 * @param size data type size, sizes greater than 8 (and other than 16) will cause an undefined
+	 *            type to be returned.
+	 * @param dtm optional program data-type manager, if specified a generic data-type will be
+	 *            returned if possible.
 	 * @return unsigned integer data type
 	 */
 	public static DataType getUnsignedDataType(int size, DataTypeManager dtm) {
@@ -465,8 +616,9 @@ public abstract class AbstractIntegerDataType extends BuiltIn implements ArraySt
 
 	/**
 	 * Returns all built-in unsigned integer data-types
-	 * @param dtm optional program data-type manager, if specified
-	 * generic data-types will be returned in place of fixed-sized data-types.
+	 * 
+	 * @param dtm optional program data-type manager, if specified generic data-types will be
+	 *            returned in place of fixed-sized data-types.
 	 * @return array of all unsigned integer types (char and bool types excluded)
 	 */
 	public static AbstractIntegerDataType[] getUnsignedDataTypes(DataTypeManager dtm) {

@@ -58,7 +58,6 @@ import ghidra.trace.model.listing.*;
 import ghidra.trace.model.memory.TraceMemoryRegion;
 import ghidra.trace.model.memory.TraceMemoryState;
 import ghidra.trace.model.program.TraceProgramView;
-import ghidra.trace.model.program.TraceProgramViewMemory;
 import ghidra.trace.model.symbol.*;
 import ghidra.trace.model.thread.TraceThread;
 import ghidra.trace.util.*;
@@ -109,6 +108,8 @@ public class DBTraceProgramView implements TraceProgramView {
 			listenFor(TraceCodeChangeType.REMOVED, this::codeRemoved);
 			listenFor(TraceCodeChangeType.FRAGMENT_CHANGED, this::codeFragmentChanged);
 			listenFor(TraceCodeChangeType.DATA_TYPE_REPLACED, this::codeDataTypeReplaced);
+			listenFor(TraceCodeChangeType.DATA_TYPE_SETTINGS_CHANGED,
+				this::codeDataTypeSettingsChanged);
 
 			listenFor(TraceCommentChangeType.EOL_CHANGED, this::commentEolChanged);
 			listenFor(TraceCommentChangeType.PLATE_CHANGED, this::commentPlateChanged);
@@ -330,8 +331,19 @@ public class DBTraceProgramView implements TraceProgramView {
 			if (queues == null) {
 				return;
 			}
-			queues.fireEvent(new ProgramChangeRecord(ChangeManager.DOCR_CODE_REPLACED,
+			queues.fireEvent(new ProgramChangeRecord(ChangeManager.DOCR_DATA_TYPE_REPLACED,
 				range.getX1(), range.getX2(), null, null, null));
+		}
+
+		private void codeDataTypeSettingsChanged(TraceAddressSpace space,
+				TraceAddressSnapRange range) {
+			DomainObjectEventQueues queues = isVisible(space, range);
+			if (queues == null) {
+				return;
+			}
+			// Yes, x1 twice
+			queues.fireEvent(new ProgramChangeRecord(ChangeManager.DOCR_DATA_TYPE_SETTING_CHANGED,
+				range.getX1(), range.getX1(), null, null, null));
 		}
 
 		private void commentChanged(int docrType, TraceAddressSpace space,
@@ -931,6 +943,13 @@ public class DBTraceProgramView implements TraceProgramView {
 		}
 	}
 
+	/**
+	 * Fires object-restored event on this view and all associated register views.
+	 */
+	protected void fireObjectRestored() {
+		fireEventAllViews(new DomainObjectChangeRecord(DomainObject.DO_OBJECT_RESTORED));
+	}
+
 	@Override
 	public String toString() {
 		return String.format("<%s on %s at snap=%d>", getClass().getSimpleName(), trace, snap);
@@ -1023,7 +1042,7 @@ public class DBTraceProgramView implements TraceProgramView {
 	}
 
 	@Override
-	public TraceProgramViewMemory getMemory() {
+	public DBTraceProgramViewMemory getMemory() {
 		return memory;
 	}
 
@@ -1543,52 +1562,62 @@ public class DBTraceProgramView implements TraceProgramView {
 		trace.removeTransactionListener(listener);
 	}
 
-	public void updateMemoryAddBlock(DBTraceMemoryRegion region) {
+	public void updateMemoryAddRegionBlock(TraceMemoryRegion region) {
 		if (!isRegionVisible(region)) {
 			return;
 		}
-		memory.updateAddBlock(region);
+		memory.updateAddRegionBlock(region);
 	}
 
-	public void updateMemoryChangeBlockName(DBTraceMemoryRegion region) {
+	public void updateMemoryChangeRegionBlockName(TraceMemoryRegion region) {
 		if (!isRegionVisible(region)) {
 			return;
 		}
-		memory.updateChangeBlockName(region);
+		memory.updateChangeRegionBlockName(region);
 	}
 
-	public void updateMemoryChangeBlockFlags(DBTraceMemoryRegion region) {
+	public void updateMemoryChangeRegionBlockFlags(TraceMemoryRegion region, Range<Long> lifespan) {
+		if (!isRegionVisible(region, lifespan)) {
+			return;
+		}
+		memory.updateChangeRegionBlockFlags(region);
+	}
+
+	public void updateMemoryChangeRegionBlockRange(TraceMemoryRegion region,
+			AddressRange oldRange, AddressRange newRange) {
 		if (!isRegionVisible(region)) {
 			return;
 		}
-		memory.updateChangeBlockFlags(region);
+		memory.updateChangeRegionBlockRange(region, oldRange, newRange);
 	}
 
-	public void updateMemoryChangeBlockRange(DBTraceMemoryRegion region, AddressRange oldRange,
-			AddressRange newRange) {
-		if (!isRegionVisible(region)) {
-			return;
-		}
-		memory.updateChangeBlockRange(region, oldRange, newRange);
-	}
-
-	public void updateMemoryChangeBlockLifespan(DBTraceMemoryRegion region,
+	public void updateMemoryChangeRegionBlockLifespan(TraceMemoryRegion region,
 			Range<Long> oldLifespan, Range<Long> newLifespan) {
 		boolean inOld = isRegionVisible(region, oldLifespan);
 		boolean inNew = isRegionVisible(region, newLifespan);
 		if (inOld && !inNew) {
-			memory.updateDeleteBlock(region);
+			memory.updateDeleteRegionBlock(region);
 		}
 		if (!inOld && inNew) {
-			memory.updateAddBlock(region);
+			memory.updateAddRegionBlock(region);
 		}
 	}
 
-	public void updateMemoryDeleteBlock(DBTraceMemoryRegion region) {
+	public void updateMemoryDeleteRegionBlock(TraceMemoryRegion region) {
 		if (!isRegionVisible(region)) {
 			return;
 		}
-		memory.updateAddBlock(region);
+		memory.updateAddRegionBlock(region);
+	}
+
+	public void updateMemoryAddSpaceBlock(AddressSpace space) {
+		// Spaces not not time-bound. No visibility check.
+		memory.updateAddSpaceBlock(space);
+	}
+
+	public void updateMemoryDeleteSpaceBlock(AddressSpace space) {
+		// Spaces not not time-bound. No visibility check.
+		memory.updateDeleteSpaceBlock(space);
 	}
 
 	public void updateMemoryRefreshBlocks() {

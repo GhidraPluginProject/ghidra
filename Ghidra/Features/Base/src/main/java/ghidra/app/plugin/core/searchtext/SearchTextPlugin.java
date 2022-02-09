@@ -30,8 +30,7 @@ import docking.widgets.fieldpanel.support.Highlight;
 import docking.widgets.table.threaded.*;
 import ghidra.GhidraOptions;
 import ghidra.app.CorePluginPackage;
-import ghidra.app.context.ListingActionContext;
-import ghidra.app.context.NavigatableActionContext;
+import ghidra.app.context.*;
 import ghidra.app.nav.Navigatable;
 import ghidra.app.nav.NavigatableRemovalListener;
 import ghidra.app.plugin.PluginCategoryNames;
@@ -92,7 +91,6 @@ public class SearchTextPlugin extends ProgramPlugin implements OptionsChangeList
 	private static final ImageIcon searchIcon = ResourceManager.loadImage("images/searchm_obj.gif");
 
 	private static final String DESCRIPTION = "Search program text for string";
-	private final static int DEFAULT_SEARCH_LIMIT = 500;
 	private final static Highlight[] NO_HIGHLIGHTS = new Highlight[0];
 
 	private boolean waitingForSearchAll;
@@ -380,6 +378,7 @@ public class SearchTextPlugin extends ProgramPlugin implements OptionsChangeList
 				.description(DESCRIPTION)
 				.helpLocation(new HelpLocation(HelpTopics.SEARCH, "Search Text"))
 				.withContext(NavigatableActionContext.class)
+				.validContextWhen(c -> !(c instanceof RestrictedAddressSetContext))
 				.inWindow(ActionBuilder.When.CONTEXT_MATCHES)
 				.supportsDefaultToolContext(true)
 				.onAction(c -> {
@@ -442,9 +441,6 @@ public class SearchTextPlugin extends ProgramPlugin implements OptionsChangeList
 		ToolOptions opt = tool.getOptions(PluginConstants.SEARCH_OPTION_NAME);
 		HelpLocation loc = new HelpLocation(HelpTopics.SEARCH, "HighlightText");
 
-		opt.registerOption(GhidraOptions.OPTION_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT, loc,
-			"Max number of matches on a search that will be displayed.");
-
 		opt.registerOption(PluginConstants.SEARCH_HIGHLIGHT_NAME, true, loc,
 			"Determines whether to highlight the matched string for a search in the listing.");
 		opt.registerOption(PluginConstants.SEARCH_HIGHLIGHT_COLOR_NAME,
@@ -454,7 +450,8 @@ public class SearchTextPlugin extends ProgramPlugin implements OptionsChangeList
 			PluginConstants.SEARCH_HIGHLIGHT_COLOR, loc,
 			"Color to use for highlighting when the match string occurs at the current address.");
 
-		searchLimit = opt.getInt(GhidraOptions.OPTION_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT);
+		searchLimit =
+			opt.getInt(GhidraOptions.OPTION_SEARCH_LIMIT, PluginConstants.DEFAULT_SEARCH_LIMIT);
 
 		doHighlight = opt.getBoolean(PluginConstants.SEARCH_HIGHLIGHT_NAME, true);
 		highlightColor = opt.getColor(PluginConstants.SEARCH_HIGHLIGHT_COLOR_NAME,

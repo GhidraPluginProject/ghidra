@@ -52,7 +52,7 @@ public class ElfBinaryAnalysisCommand extends FlatProgramAPI
 	@Override
 	public boolean canApply(Program program) {
 		try {
-			Options options = program.getOptions("Program Information");
+			Options options = program.getOptions(Program.PROGRAM_INFO);
 			String format = options.getString("Executable Format", null);
 			if (!BinaryLoader.BINARY_NAME.equals(format)) {
 				return false;
@@ -80,7 +80,8 @@ public class ElfBinaryAnalysisCommand extends FlatProgramAPI
 		ByteProvider provider = new MemoryByteProvider(currentProgram.getMemory(),
 			currentProgram.getAddressFactory().getDefaultAddressSpace());
 		try {
-			ElfHeader elf = ElfHeader.createElfHeader(RethrowContinuesFactory.INSTANCE, provider);
+			ElfHeader elf = ElfHeader.createElfHeader(RethrowContinuesFactory.INSTANCE, provider,
+				msg -> messages.appendMsg(msg));
 			elf.parse();
 
 			processElfHeader(elf, listing);
@@ -325,7 +326,7 @@ public class ElfBinaryAnalysisCommand extends FlatProgramAPI
 		ElfStringTable dynamicStringTable = elf.getDynamicStringTable();
 		if (dynamicStringTable != null) {
 			String str = dynamicStringTable.readString(reader, dynamic.getValue());
-			if (str != null) {
+			if (str != null && str.length() != 0) {
 				data.setComment(CodeUnit.EOL_COMMENT, str);
 			}
 		}

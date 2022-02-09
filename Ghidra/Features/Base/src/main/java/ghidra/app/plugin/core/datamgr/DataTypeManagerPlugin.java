@@ -26,6 +26,8 @@ import java.util.Map.Entry;
 import javax.swing.SwingUtilities;
 import javax.swing.tree.TreePath;
 
+import org.apache.commons.lang3.StringUtils;
+
 import docking.ActionContext;
 import docking.Tool;
 import docking.action.*;
@@ -525,8 +527,13 @@ public class DataTypeManagerPlugin extends ProgramPlugin
 	@Override
 	public DataType getDataType(String filterText) {
 		DataTypeChooserDialog dialog = new DataTypeChooserDialog(this);
-		dialog.setFilterText(filterText);
-		tool.showDialog(dialog);
+		if (!StringUtils.isBlank(filterText)) {
+			dialog.showPrepopulatedDialog(tool, filterText);
+		}
+		else {
+			tool.showDialog(dialog);
+		}
+
 		return dialog.getSelectedDataType();
 	}
 
@@ -603,6 +610,14 @@ public class DataTypeManagerPlugin extends ProgramPlugin
 		if (provider.isVisible()) {
 			provider.setDataTypeSelected(dataType);
 		}
+	}
+
+	@Override
+	public List<DataType> getSelectedDatatypes() {
+		if (provider.isVisible()) {
+			return provider.getSelectedDataTypes();
+		}
+		return Collections.emptyList();
 	}
 
 	@Override

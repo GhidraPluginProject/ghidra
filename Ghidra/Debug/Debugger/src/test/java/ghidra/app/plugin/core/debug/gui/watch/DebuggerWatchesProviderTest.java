@@ -19,29 +19,42 @@ import static org.junit.Assert.*;
 
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.util.*;
 
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.junit.*;
 
+import com.google.common.collect.Range;
+
 import generic.Unique;
+import ghidra.app.plugin.core.codebrowser.CodeBrowserPlugin;
+import ghidra.app.plugin.core.codebrowser.CodeViewerProvider;
 import ghidra.app.plugin.core.debug.gui.AbstractGhidraHeadedDebuggerGUITest;
 import ghidra.app.plugin.core.debug.gui.listing.DebuggerListingPlugin;
+import ghidra.app.plugin.core.debug.gui.listing.DebuggerListingProvider;
+import ghidra.app.plugin.core.debug.gui.register.*;
+import ghidra.app.plugin.core.debug.service.modules.DebuggerStaticMappingServicePlugin;
+import ghidra.app.services.ActionSource;
 import ghidra.app.services.TraceRecorder;
+import ghidra.async.AsyncTestUtils;
 import ghidra.dbg.model.TestTargetRegisterBankInThread;
-import ghidra.program.model.address.Address;
-import ghidra.program.model.address.AddressRangeImpl;
-import ghidra.program.model.data.LongDataType;
-import ghidra.program.model.data.LongLongDataType;
+import ghidra.program.model.address.*;
+import ghidra.program.model.data.*;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.lang.RegisterValue;
+import ghidra.program.model.mem.Memory;
+import ghidra.program.util.ProgramLocation;
+import ghidra.trace.model.DefaultTraceLocation;
 import ghidra.trace.model.Trace;
-import ghidra.trace.model.memory.TraceMemoryRegisterSpace;
+import ghidra.trace.model.memory.*;
 import ghidra.trace.model.thread.TraceThread;
 import ghidra.trace.util.TraceRegisterUtils;
 import ghidra.util.Msg;
 import ghidra.util.database.UndoableTransaction;
+import ghidra.util.task.TaskMonitor;
 
-public class DebuggerWatchesProviderTest extends AbstractGhidraHeadedDebuggerGUITest {
+public class DebuggerWatchesProviderTest extends AbstractGhidraHeadedDebuggerGUITest
+		implements AsyncTestUtils {
 
 	protected static void assertNoErr(WatchRow row) {
 		Throwable error = row.getError();
@@ -53,18 +66,32 @@ public class DebuggerWatchesProviderTest extends AbstractGhidraHeadedDebuggerGUI
 	protected DebuggerWatchesPlugin watchesPlugin;
 	protected DebuggerWatchesProvider watchesProvider;
 	protected DebuggerListingPlugin listingPlugin;
+	protected DebuggerListingProvider listingProvider;
+	protected DebuggerStaticMappingServicePlugin mappingService;
+	protected CodeViewerProvider codeViewerProvider;
 
 	protected Register r0;
+	protected Register r1;
 	protected TraceThread thread;
+
+	protected TestTargetRegisterBankInThread bank;
+	protected TraceRecorder recorder;
 
 	@Before
 	public void setUpWatchesProviderTest() throws Exception {
+		// Do this before listing, because DebuggerListing also implements CodeViewer
+		addPlugin(tool, CodeBrowserPlugin.class);
+		codeViewerProvider = waitForComponentProvider(CodeViewerProvider.class);
+
 		watchesPlugin = addPlugin(tool, DebuggerWatchesPlugin.class);
 		watchesProvider = waitForComponentProvider(DebuggerWatchesProvider.class);
 		listingPlugin = addPlugin(tool, DebuggerListingPlugin.class);
+		listingProvider = waitForComponentProvider(DebuggerListingProvider.class);
+		mappingService = addPlugin(tool, DebuggerStaticMappingServicePlugin.class);
 
 		createTrace();
 		r0 = tb.language.getRegister("r0");
+		r1 = tb.language.getRegister("r1");
 		try (UndoableTransaction tid = tb.startTransaction()) {
 			thread = tb.getOrAddThread("Thread1", 0);
 		}
@@ -189,7 +216,7 @@ public class DebuggerWatchesProviderTest extends AbstractGhidraHeadedDebuggerGUI
 	public void testLiveCausesReads() throws Exception {
 		createTestModel();
 		mb.createTestProcessesAndThreads();
-		TestTargetRegisterBankInThread bank = mb.testThread1.addRegisterBank();
+		bank = mb.testThread1.addRegisterBank();
 
 		// Write before we record, and verify trace has not recorded it before setting watch
 		mb.testProcess1.regs.addRegistersFromLanguage(tb.language, Register::isBaseRegister);
@@ -198,8 +225,8 @@ public class DebuggerWatchesProviderTest extends AbstractGhidraHeadedDebuggerGUI
 		mb.testProcess1.addRegion(".text", mb.rng(0x00400000, 0x00401000), "rx");
 		mb.testProcess1.memory.writeMemory(mb.addr(0x00400000), tb.arr(1, 2, 3, 4));
 
-		TraceRecorder recorder = modelService.recordTarget(mb.testProcess1,
-			new TestDebuggerTargetTraceMapper(mb.testProcess1));
+		recorder = modelService.recordTarget(mb.testProcess1,
+			createTargetTraceMapper(mb.testProcess1), ActionSource.AUTOMATIC);
 		Trace trace = recorder.getTrace();
 		TraceThread thread = waitForValue(() -> recorder.getTraceThread(mb.testThread1));
 
@@ -230,5 +257,314 @@ public class DebuggerWatchesProviderTest extends AbstractGhidraHeadedDebuggerGUI
 			assertEquals("1020304h", row.getValueString());
 		});
 		assertNoErr(row);
+	}
+
+	protected void runTestDeadIsEditable(String expression, boolean expectWritable) {
+		setRegisterValues(thread);
+
+		performAction(watchesProvider.actionAdd);
+		WatchRow row = Unique.assertOne(watchesProvider.watchTableModel.getModelData());
+		row.setExpression(expression);
+
+		assertFalse(row.isValueEditable());
+		traceManager.openTrace(tb.trace);
+		traceManager.activateThread(thread);
+		waitForSwing();
+
+		assertNoErr(row);
+		assertFalse(row.isValueEditable());
+
+		performAction(watchesProvider.actionEnableEdits);
+		assertEquals(expectWritable, row.isValueEditable());
+	}
+
+	@Test
+	public void testDeadIsRegisterEditable() {
+		runTestDeadIsEditable("r0", true);
+	}
+
+	@Test
+	public void testDeadIsUniqueEditable() {
+		runTestDeadIsEditable("r0 + 8", false);
+	}
+
+	@Test
+	public void testDeadIsMemoryEditable() {
+		runTestDeadIsEditable("*:8 r0", true);
+	}
+
+	protected WatchRow prepareTestDeadEdit(String expression) {
+		setRegisterValues(thread);
+
+		performAction(watchesProvider.actionAdd);
+		WatchRow row = Unique.assertOne(watchesProvider.watchTableModel.getModelData());
+		row.setExpression(expression);
+
+		traceManager.openTrace(tb.trace);
+		traceManager.activateThread(thread);
+		performAction(watchesProvider.actionEnableEdits);
+
+		return row;
+	}
+
+	@Test
+	public void testDeadEditRegister() {
+		WatchRow row = prepareTestDeadEdit("r0");
+		TraceMemoryRegisterSpace regVals =
+			tb.trace.getMemoryManager().getMemoryRegisterSpace(thread, false);
+
+		row.setRawValueString("0x1234");
+		waitForPass(() -> {
+			long viewSnap = traceManager.getCurrent().getViewSnap();
+			assertEquals(BigInteger.valueOf(0x1234),
+				regVals.getValue(viewSnap, r0).getUnsignedValue());
+			assertEquals("0x1234", row.getRawValueString());
+		});
+
+		row.setRawValueString("1234"); // Decimal this time
+		waitForPass(() -> {
+			long viewSnap = traceManager.getCurrent().getViewSnap();
+			assertEquals(BigInteger.valueOf(1234),
+				regVals.getValue(viewSnap, r0).getUnsignedValue());
+			assertEquals("0x4d2", row.getRawValueString());
+		});
+	}
+
+	@Test
+	public void testDeadEditMemory() {
+		WatchRow row = prepareTestDeadEdit("*:8 r0");
+		TraceMemoryOperations mem = tb.trace.getMemoryManager();
+		ByteBuffer buf = ByteBuffer.allocate(8);
+
+		row.setRawValueString("0x1234");
+		waitForPass(() -> {
+			long viewSnap = traceManager.getCurrent().getViewSnap();
+			buf.clear();
+			mem.getBytes(viewSnap, tb.addr(0x00400000), buf);
+			buf.flip();
+			assertEquals(0x1234, buf.getLong());
+		});
+
+		row.setRawValueString("{ 12 34 56 78 9a bc de f0 }");
+		waitForPass(() -> {
+			long viewSnap = traceManager.getCurrent().getViewSnap();
+			buf.clear();
+			mem.getBytes(viewSnap, tb.addr(0x00400000), buf);
+			buf.flip();
+			assertEquals(0x123456789abcdef0L, buf.getLong());
+		});
+	}
+
+	protected WatchRow prepareTestLiveEdit(String expression) throws Exception {
+		createTestModel();
+		mb.createTestProcessesAndThreads();
+		bank = mb.testThread1.addRegisterBank();
+
+		mb.testProcess1.regs.addRegistersFromLanguage(tb.language,
+			r -> r != r1 && r.isBaseRegister());
+		bank.writeRegister("r0", tb.arr(0, 0, 0, 0, 0, 0x40, 0, 0));
+		mb.testProcess1.addRegion(".text", mb.rng(0x00400000, 0x00401000), "rx");
+
+		recorder = modelService.recordTarget(mb.testProcess1,
+			createTargetTraceMapper(mb.testProcess1), ActionSource.AUTOMATIC);
+		Trace trace = recorder.getTrace();
+		TraceThread thread = waitForValue(() -> recorder.getTraceThread(mb.testThread1));
+
+		traceManager.openTrace(trace);
+		traceManager.activateThread(thread);
+		waitForSwing();
+
+		performAction(watchesProvider.actionAdd);
+		WatchRow row = Unique.assertOne(watchesProvider.watchTableModel.getModelData());
+		row.setExpression(expression);
+		performAction(watchesProvider.actionEnableEdits);
+
+		return row;
+	}
+
+	@Test
+	public void testLiveEditRegister() throws Throwable {
+		WatchRow row = prepareTestLiveEdit("r0");
+
+		row.setRawValueString("0x1234");
+		retryVoid(() -> {
+			assertArrayEquals(tb.arr(0, 0, 0, 0, 0, 0, 0x12, 0x34), bank.regVals.get("r0"));
+		}, List.of(AssertionError.class));
+	}
+
+	@Test
+	public void testLiveEditMemory() throws Throwable {
+		WatchRow row = prepareTestLiveEdit("*:8 r0");
+
+		row.setRawValueString("0x1234");
+		retryVoid(() -> {
+			assertArrayEquals(tb.arr(0, 0, 0, 0, 0, 0, 0x12, 0x34),
+				waitOn(mb.testProcess1.memory.readMemory(tb.addr(0x00400000), 8)));
+		}, List.of(AssertionError.class));
+	}
+
+	@Test
+	public void testLiveEditNonMappableRegister() throws Throwable {
+		WatchRow row = prepareTestLiveEdit("r1");
+		TraceThread thread = recorder.getTraceThread(mb.testThread1);
+		// Sanity check
+		assertFalse(recorder.isRegisterOnTarget(thread, r1));
+
+		row.setRawValueString("0x1234");
+		waitForPass(() -> {
+			TraceMemoryRegisterSpace regs =
+				recorder.getTrace().getMemoryManager().getMemoryRegisterSpace(thread, false);
+			assertNotNull(regs);
+			long viewSnap = traceManager.getCurrent().getViewSnap();
+			assertEquals(BigInteger.valueOf(0x1234),
+				regs.getValue(viewSnap, r1).getUnsignedValue());
+		});
+
+		assertFalse(bank.regVals.containsKey("r1"));
+	}
+
+	protected void setupUnmappedDataSection() throws Throwable {
+		try (UndoableTransaction tid = tb.startTransaction()) {
+			TraceMemoryOperations mem = tb.trace.getMemoryManager();
+			mem.createRegion("Memory[bin:.data]", 0, tb.range(0x00600000, 0x0060ffff),
+				TraceMemoryFlag.READ, TraceMemoryFlag.WRITE);
+		}
+		waitForDomainObject(tb.trace);
+
+		traceManager.openTrace(tb.trace);
+		traceManager.activateTrace(tb.trace);
+		waitForSwing();
+	}
+
+	protected void setupMappedDataSection() throws Throwable {
+		createProgramFromTrace();
+		intoProject(tb.trace);
+		intoProject(program);
+
+		try (UndoableTransaction tid = tb.startTransaction()) {
+			TraceMemoryOperations mem = tb.trace.getMemoryManager();
+			mem.createRegion("Memory[bin:.data]", 0, tb.range(0x55750000, 0x5575ffff),
+				TraceMemoryFlag.READ, TraceMemoryFlag.WRITE);
+		}
+		waitForDomainObject(tb.trace);
+
+		traceManager.openTrace(tb.trace);
+		traceManager.activateTrace(tb.trace);
+		programManager.openProgram(program);
+
+		AddressSpace stSpace = program.getAddressFactory().getDefaultAddressSpace();
+		try (UndoableTransaction tid = UndoableTransaction.start(program, "Add block", true)) {
+			Memory mem = program.getMemory();
+			mem.createInitializedBlock(".data", tb.addr(stSpace, 0x00600000), 0x10000,
+				(byte) 0, TaskMonitor.DUMMY, false);
+		}
+
+		DefaultTraceLocation tloc =
+			new DefaultTraceLocation(tb.trace, null, Range.atLeast(0L), tb.addr(0x55750000));
+		ProgramLocation ploc = new ProgramLocation(program, tb.addr(stSpace, 0x00600000));
+		try (UndoableTransaction tid = tb.startTransaction()) {
+			mappingService.addMapping(tloc, ploc, 0x10000, false);
+		}
+		waitForValue(() -> mappingService.getOpenMappedLocation(tloc));
+	}
+
+	@Test
+	public void testActionWatchViaListingDynamicSelection() throws Throwable {
+		setupUnmappedDataSection();
+
+		select(listingProvider,
+			tb.set(tb.range(0x00600000, 0x0060000f), tb.range(0x00600020, 0x0060002f)));
+		waitForSwing();
+
+		performEnabledAction(listingProvider, watchesProvider.actionAddFromLocation, true);
+
+		List<WatchRow> watches = new ArrayList<>(watchesProvider.watchTableModel.getModelData());
+		watches.sort(Comparator.comparing(WatchRow::getExpression));
+		assertEquals(2, watches.size());
+		assertEquals("*:16 0x00600000:8", watches.get(0).getExpression());
+		assertEquals("*:16 0x00600020:8", watches.get(1).getExpression());
+	}
+
+	@Test
+	public void testActionWatchViaListingStaticSelection() throws Throwable {
+		setupMappedDataSection();
+
+		select(codeViewerProvider,
+			tb.set(tb.range(0x00600000, 0x0060000f), tb.range(0x00600020, 0x0060002f)));
+		waitForSwing();
+
+		performEnabledAction(codeViewerProvider, watchesProvider.actionAddFromLocation, true);
+
+		List<WatchRow> watches = new ArrayList<>(watchesProvider.watchTableModel.getModelData());
+		watches.sort(Comparator.comparing(WatchRow::getExpression));
+		assertEquals(2, watches.size());
+		assertEquals("*:16 0x55750000:8", watches.get(0).getExpression());
+		assertEquals("*:16 0x55750020:8", watches.get(1).getExpression());
+	}
+
+	@Test
+	public void testActionWatchViaListingDynamicDataUnit() throws Throwable {
+		setupUnmappedDataSection();
+
+		Structure structDt = new StructureDataType("myStruct", 0);
+		structDt.add(DWordDataType.dataType, "field0", "");
+		structDt.add(DWordDataType.dataType, "field4", "");
+
+		try (UndoableTransaction tid = tb.startTransaction()) {
+			tb.trace.getCodeManager()
+					.definedData()
+					.create(Range.atLeast(0L), tb.addr(0x00600000), structDt);
+		}
+
+		// TODO: Test with expanded structure?
+
+		performEnabledAction(listingProvider, watchesProvider.actionAddFromLocation, true);
+
+		WatchRow watch = Unique.assertOne(watchesProvider.watchTableModel.getModelData());
+		assertEquals("*:8 0x00600000:8", watch.getExpression());
+		assertTypeEquals(structDt, watch.getDataType());
+	}
+
+	@Test
+	public void testActionWatchViaListingStaticDataUnit() throws Throwable {
+		setupMappedDataSection();
+		AddressSpace stSpace = program.getAddressFactory().getDefaultAddressSpace();
+
+		Structure structDt = new StructureDataType("myStruct", 0);
+		structDt.add(DWordDataType.dataType, "field0", "");
+		structDt.add(DWordDataType.dataType, "field4", "");
+
+		try (UndoableTransaction tid = UndoableTransaction.start(program, "Add data", true)) {
+			program.getListing().createData(tb.addr(stSpace, 0x00600000), structDt);
+		}
+
+		// TODO: Test with expanded structure?
+
+		performEnabledAction(codeViewerProvider, watchesProvider.actionAddFromLocation, true);
+
+		WatchRow watch = Unique.assertOne(watchesProvider.watchTableModel.getModelData());
+		assertEquals("*:8 0x55750000:8", watch.getExpression());
+		assertTypeEquals(structDt, watch.getDataType());
+	}
+
+	@Test
+	public void testActionWatchViaRegisters() throws Throwable {
+		addPlugin(tool, DebuggerRegistersPlugin.class);
+		DebuggerRegistersProvider registersProvider =
+			waitForComponentProvider(DebuggerRegistersProvider.class);
+		traceManager.openTrace(tb.trace);
+		traceManager.activateThread(thread);
+		waitForSwing();
+
+		RegisterRow rowR0 = registersProvider.getRegisterRow(r0);
+		rowR0.setDataType(PointerDataType.dataType);
+		registersProvider.setSelectedRow(rowR0);
+		waitForSwing();
+
+		performEnabledAction(registersProvider, watchesProvider.actionAddFromRegister, true);
+
+		WatchRow watch = Unique.assertOne(watchesProvider.watchTableModel.getModelData());
+		assertEquals("r0", watch.getExpression());
+		assertTypeEquals(PointerDataType.dataType, watch.getDataType());
 	}
 }

@@ -85,8 +85,9 @@ public class CloseToolTest extends AbstractGhidraHeadedIntegrationTest {
 
 		DockingActionIf closeOthersAction = getAction(pm, "Close Others");
 		assertNotNull(closeOthersAction);
-		assertEquals(true, closeOthersAction.isEnabled());
-		performAction(closeOthersAction, true);
+		ProgramActionContext context = new ProgramActionContext(null, program1);
+		assertEquals(true, closeOthersAction.isEnabledForContext(context));
+		performAction(closeOthersAction, context, true);
 
 		allOpenPrograms = pm.getAllOpenPrograms();
 		assertEquals(1, allOpenPrograms.length);

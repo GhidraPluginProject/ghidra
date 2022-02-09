@@ -36,9 +36,7 @@ import ghidra.util.task.TaskMonitor;
  * Symbol class for function variables.
  *
  * Symbol Data Usage:
- *   	long data1 - data type ID
- *      int data2 - first-use-offset / ordinal
- *   	String data3 - variable comment
+ *   	String stringData - variable comment
  */
 public class VariableSymbolDB extends SymbolDB {
 
@@ -51,6 +49,7 @@ public class VariableSymbolDB extends SymbolDB {
 	 * @param symbolMgr the symbol manager
 	 * @param cache symbol object cache
 	 * @param type the symbol type.
+	 * @param variableMgr variable storage manager
 	 * @param address the address of the symbol (stack address)
 	 * @param record the record for the symbol
 	 */
@@ -174,8 +173,9 @@ public class VariableSymbolDB extends SymbolDB {
 	}
 
 	public FunctionDB getFunction() {
-		return (FunctionDB) symbolMgr.getFunctionManager().getFunction(
-			getParentNamespace().getID());
+		return (FunctionDB) symbolMgr.getFunctionManager()
+				.getFunction(
+					getParentNamespace().getID());
 	}
 
 	/**
@@ -195,6 +195,7 @@ public class VariableSymbolDB extends SymbolDB {
 	 */
 	@Override
 	public boolean isValidParent(Namespace parent) {
+		// symbol is locked to single function and can't be moved
 		return getFunction() == parent;
 	}
 
@@ -252,7 +253,7 @@ public class VariableSymbolDB extends SymbolDB {
 	}
 
 	public DataType getDataType() {
-		DataType dt = symbolMgr.getDataType(getSymbolData1());
+		DataType dt = symbolMgr.getDataType(getDataTypeId());
 		if (dt == null) {
 			VariableStorage storage = getVariableStorage();
 			if (storage == null) {
@@ -286,8 +287,8 @@ public class VariableSymbolDB extends SymbolDB {
 			Address newAddr = variableMgr.getVariableStorageAddress(newStorage, true);
 			setAddress(newAddr); // this may be the only symbol which changes its address
 
-			if (dataTypeID != getSymbolData1()) {
-				setSymbolData1(dataTypeID);
+			if (dataTypeID != getDataTypeId()) {
+				setDataTypeId(dataTypeID);
 			}
 			else {
 				symbolMgr.symbolDataChanged(this);
@@ -302,22 +303,22 @@ public class VariableSymbolDB extends SymbolDB {
 	}
 
 	public int getFirstUseOffset() {
-		return type == SymbolType.PARAMETER ? 0 : getSymbolData2();
+		return type == SymbolType.PARAMETER ? 0 : getVariableOffset();
 	}
 
 	public void setFirstUseOffset(int firstUseOffset) {
 		if (type == SymbolType.LOCAL_VAR) {
-			setSymbolData2(firstUseOffset);
+			setVariableOffset(firstUseOffset);
 		}
 	}
 
 	public int getOrdinal() {
-		return type == SymbolType.PARAMETER ? getSymbolData2() : Integer.MIN_VALUE;
+		return type == SymbolType.PARAMETER ? getVariableOffset() : Integer.MIN_VALUE;
 	}
 
 	public void setOrdinal(int ordinal) {
 		if (type == SymbolType.PARAMETER) {
-			setSymbolData2(ordinal);
+			setVariableOffset(ordinal);
 		}
 	}
 

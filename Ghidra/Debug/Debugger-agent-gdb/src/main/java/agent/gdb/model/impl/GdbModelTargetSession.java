@@ -21,13 +21,13 @@ import java.util.concurrent.CompletableFuture;
 
 import agent.gdb.manager.*;
 import agent.gdb.manager.impl.*;
+import agent.gdb.manager.impl.cmd.GdbConsoleExecCommand.CompletesWithRunning;
 import agent.gdb.manager.impl.cmd.GdbStateChangeRecord;
 import agent.gdb.manager.reason.GdbReason;
 import ghidra.async.AsyncUtils;
 import ghidra.dbg.agent.DefaultTargetModelRoot;
 import ghidra.dbg.error.DebuggerIllegalArgumentException;
 import ghidra.dbg.target.*;
-import ghidra.dbg.target.TargetLauncher.TargetCmdLineLauncher;
 import ghidra.dbg.target.schema.*;
 import ghidra.dbg.util.PathUtils;
 import ghidra.util.Msg;
@@ -48,7 +48,7 @@ import ghidra.util.Msg;
 		@TargetAttributeType(type = Void.class) })
 public class GdbModelTargetSession extends DefaultTargetModelRoot
 		implements TargetAccessConditioned, TargetAttacher, TargetInterpreter, TargetInterruptible,
-		TargetCmdLineLauncher, TargetActiveScope, TargetEventScope, TargetFocusScope,
+		TargetLauncher, TargetActiveScope, TargetEventScope, TargetFocusScope,
 		GdbConsoleOutputListener, GdbEventsListenerAdapter {
 	protected static final String GDB_PROMPT = "(gdb)";
 
@@ -80,7 +80,7 @@ public class GdbModelTargetSession extends DefaultTargetModelRoot
 			ACCESSIBLE_ATTRIBUTE_NAME, accessible, //
 			PROMPT_ATTRIBUTE_NAME, GDB_PROMPT, //
 			DISPLAY_ATTRIBUTE_NAME, display, //
-			TargetMethod.PARAMETERS_ATTRIBUTE_NAME, TargetCmdLineLauncher.PARAMETERS, //
+			TargetMethod.PARAMETERS_ATTRIBUTE_NAME, GdbModelTargetInferior.PARAMETERS, //
 			SUPPORTED_ATTACH_KINDS_ATTRIBUTE_NAME, GdbModelTargetInferior.SUPPORTED_KINDS, //
 			FOCUS_ATTRIBUTE_NAME, this // Satisfy schema. Will be set to first inferior.
 		), "Initialized");
@@ -113,7 +113,7 @@ public class GdbModelTargetSession extends DefaultTargetModelRoot
 
 	protected void getVersion() {
 		impl.gdb.waitForPrompt().thenCompose(__ -> {
-			return impl.gdb.consoleCapture("show version");
+			return impl.gdb.consoleCapture("show version", CompletesWithRunning.CANNOT);
 		}).thenAccept(out -> {
 			debugger = out;
 			changeAttributes(List.of(),
@@ -205,9 +205,14 @@ public class GdbModelTargetSession extends DefaultTargetModelRoot
 	}
 
 	@Override
-	public CompletableFuture<Void> launch(List<String> args) {
+	public CompletableFuture<Void> launch(Map<String, ?> args) {
+		List<String> cmdLineArgs =
+			CmdLineParser.tokenize(TargetCmdLineLauncher.PARAMETER_CMDLINE_ARGS.get(args));
+		Boolean useStarti = GdbModelTargetInferior.PARAMETER_STARTI.get(args);
 		return impl.gateFuture(impl.gdb.availableInferior().thenCompose(inf -> {
-			return GdbModelImplUtils.launch(impl, inf, args);
+			return GdbModelImplUtils.launch(inf, cmdLineArgs, useStarti, () -> {
+				return inferiors.getTargetInferior(inf).environment.refreshInternal();
+			});
 		}).thenApply(__ -> null));
 	}
 
@@ -229,7 +234,7 @@ public class GdbModelTargetSession extends DefaultTargetModelRoot
 		//return impl.gdb.interrupt();
 		try {
 			impl.gdb.sendInterruptNow();
-			impl.gdb.cancelCurrentCommand();
+			//impl.gdb.cancelCurrentCommand();
 		}
 		catch (IOException e) {
 			Msg.error(this, "Could not interrupt", e);

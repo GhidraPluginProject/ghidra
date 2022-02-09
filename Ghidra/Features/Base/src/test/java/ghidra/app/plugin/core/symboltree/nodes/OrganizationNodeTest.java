@@ -24,8 +24,8 @@ import org.junit.Test;
 
 import docking.test.AbstractDockingTest;
 import docking.widgets.tree.GTreeNode;
-import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.StubSymbol;
+import ghidra.program.model.symbol.Symbol;
 import ghidra.util.Swing;
 import ghidra.util.exception.AssertException;
 import ghidra.util.exception.CancelledException;
@@ -82,6 +82,37 @@ public class OrganizationNodeTest extends AbstractDockingTest {
 		assertEquals(6, caGroup.getChildCount());
 		assertEquals("CAA", caGroup.getChild(0).getName());
 		assertEquals("CAF", caGroup.getChild(5).getName());
+	}
+
+	@Test
+	public void testInsertNodeMixedCase() {
+		List<GTreeNode> nodeList = nodes("Aaa", "AAa", "Aab", "AAb", "AAc", "Aac", "AAd", "Aad",
+			"AAe", "Aae", "AAf", "Aaf", "Z");
+		List<GTreeNode> result = organize(nodeList, 3);
+		// this in two nodes, the group starting with "A" and the node "Z" (Z) was added so that
+		// an "A" group would be a top level group
+
+		OrganizationNode groupA = (OrganizationNode) result.get(0);
+		assertEquals("A", groupA.getName());
+
+		assertEquals(2, groupA.getChildCount());
+		OrganizationNode groupAa = (OrganizationNode) groupA.getChild(0);
+		OrganizationNode groupAA = (OrganizationNode) groupA.getChild(1);
+		assertEquals("Aa", groupAa.getName());
+		assertEquals("AA", groupAA.getName());
+		assertEquals(6, groupAa.getChildCount());
+		assertEquals(6, groupAA.getChildCount());
+
+		groupA.insertNode(node("AAaz"));
+		// node should be added to AA group
+		assertEquals(6, groupAa.getChildCount());
+		assertEquals(7, groupAA.getChildCount());
+
+		groupA.insertNode(node("Aaaz"));
+		// node should be added to Aa group
+		assertEquals(7, groupAa.getChildCount());
+		assertEquals(7, groupAA.getChildCount());
+
 	}
 
 	@Test
@@ -160,7 +191,40 @@ public class OrganizationNodeTest extends AbstractDockingTest {
 
 		assertEquals(OrganizationNode.MAX_SAME_NAME + 1, dupNode.getChildCount());
 		assertEquals("12 more...", dupNode.getChild(OrganizationNode.MAX_SAME_NAME).getName());
+	}
 
+	@Test
+	public void testEmptyNodeIsRemoved() {
+		List<GTreeNode> nodeList = nodes("AA1", "AA2", "AA3", "AB1", "AB2", "AB3",
+			"BB1", "BB2", "BB3", "CCC", "DDD");
+		List<GTreeNode> result = organize(nodeList, 3);
+		// the result should have  4 nodes, the first being the "A" node
+		assertEquals(4, result.size());
+		GTreeNode nodeA = result.get(0);
+		assertEquals("A", nodeA.getName());
+
+		// The A node should have 2 children AA and AB
+		assertEquals(2, nodeA.getChildCount());
+		GTreeNode nodeAA = nodeA.getChild(0);
+		assertEquals("AA", nodeAA.getName());
+
+		// finally the AA node should have 3 children AA1,AA2,AA3
+		assertEquals(3, nodeAA.getChildCount());
+		GTreeNode nodeAA1 = nodeAA.getChild(0);
+		GTreeNode nodeAA2 = nodeAA.getChild(1);
+		GTreeNode nodeAA3 = nodeAA.getChild(2);
+
+		assertEquals("AA1", nodeAA1.getName());
+		assertEquals("AA2", nodeAA2.getName());
+		assertEquals("AA3", nodeAA3.getName());
+
+		// remove AA1,AA2,AA3, verify that AA is removed as well
+		nodeAA.removeNode(nodeAA1);
+		nodeAA.removeNode(nodeAA2);
+		nodeAA.removeNode(nodeAA3);
+
+		assertEquals(1, nodeA.getChildCount());
+		assertEquals("AB", nodeA.getChild(0).getName());
 	}
 
 	private void simulateSmbolDeleted(SymbolTreeNode root, Symbol symbolToDelete) {
@@ -189,5 +253,4 @@ public class OrganizationNodeTest extends AbstractDockingTest {
 	private GTreeNode node(String name) {
 		return new CodeSymbolNode(null, new StubSymbol(name, null));
 	}
-
 }

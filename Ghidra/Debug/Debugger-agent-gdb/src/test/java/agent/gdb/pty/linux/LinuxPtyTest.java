@@ -17,16 +17,25 @@ package agent.gdb.pty.linux;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 
 import java.io.*;
 import java.util.*;
 
+import org.junit.Before;
 import org.junit.Test;
 
+import agent.gdb.pty.AbstractPtyTest;
 import agent.gdb.pty.PtySession;
 import ghidra.dbg.testutil.DummyProc;
+import ghidra.framework.OperatingSystem;
 
-public class LinuxPtyTest {
+public class LinuxPtyTest extends AbstractPtyTest {
+	@Before
+	public void checkLinux() {
+		assumeTrue(OperatingSystem.LINUX == OperatingSystem.CURRENT_OPERATING_SYSTEM);
+	}
+
 	@Test
 	public void testOpenClosePty() throws IOException {
 		LinuxPty pty = LinuxPty.openpty();
@@ -65,7 +74,7 @@ public class LinuxPtyTest {
 			PtySession bash =
 				pty.getChild().session(new String[] { DummyProc.which("bash") }, null);
 			pty.getParent().getOutputStream().write("exit\n".getBytes());
-			assertEquals(0, bash.waitExited().intValue());
+			assertEquals(0, bash.waitExited());
 		}
 	}
 
@@ -78,56 +87,8 @@ public class LinuxPtyTest {
 			 * NOTE: Java subprocess dies with code 1 on unhandled exception. TODO: Is there a nice
 			 * way to distinguish whether the code is from java or the execed image?
 			 */
-			assertEquals(1, dies.waitExited().intValue());
+			assertEquals(1, dies.waitExited());
 		}
-	}
-
-	public Thread pump(InputStream is, OutputStream os) {
-		Thread t = new Thread(() -> {
-			byte[] buf = new byte[1024];
-			while (true) {
-				int len;
-				try {
-					len = is.read(buf);
-					os.write(buf, 0, len);
-				}
-				catch (IOException e) {
-					throw new AssertionError(e);
-				}
-			}
-		});
-		t.setDaemon(true);
-		t.start();
-		return t;
-	}
-
-	public BufferedReader loggingReader(InputStream is) {
-		return new BufferedReader(new InputStreamReader(is)) {
-			@Override
-			public String readLine() throws IOException {
-				String line = super.readLine();
-				System.out.println("log: " + line);
-				return line;
-			}
-		};
-	}
-
-	public Thread runExitCheck(int expected, PtySession session) {
-		Thread exitCheck = new Thread(() -> {
-			while (true) {
-				try {
-					assertEquals("Early exit with wrong code", expected,
-						session.waitExited().intValue());
-					return;
-				}
-				catch (InterruptedException e) {
-					System.err.println("Exit check interrupted");
-				}
-			}
-		});
-		exitCheck.setDaemon(true);
-		exitCheck.start();
-		return exitCheck;
 	}
 
 	@Test
@@ -159,7 +120,7 @@ public class LinuxPtyTest {
 			assertTrue("Not 'exit 3' or 'BASH:exit 3': '" + line + "'",
 				Set.of("BASH:exit 3", "exit 3").contains(line));
 
-			assertEquals(3, bash.waitExited().intValue());
+			assertEquals(3, bash.waitExited());
 		}
 	}
 
@@ -214,7 +175,7 @@ public class LinuxPtyTest {
 			writer.flush();
 			assertTrue(Set.of("BASH:exit 3", "exit 3").contains(reader.readLine()));
 
-			assertEquals(3, bash.waitExited().intValue());
+			assertEquals(3, bash.waitExited());
 		}
 	}
 }

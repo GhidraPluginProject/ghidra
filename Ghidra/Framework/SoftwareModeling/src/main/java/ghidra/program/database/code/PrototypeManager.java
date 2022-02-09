@@ -307,7 +307,6 @@ class PrototypeManager {
 
 	private void populatePrototypes() {
 		try {
-
 			RecordIterator iter = protoAdapter.getRecords();
 			while (iter.hasNext()) {
 				DBRecord record = iter.next();

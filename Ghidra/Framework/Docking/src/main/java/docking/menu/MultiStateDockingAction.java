@@ -15,7 +15,6 @@
  */
 package docking.menu;
 
-import java.awt.event.ActionListener;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -23,25 +22,24 @@ import javax.swing.Icon;
 import javax.swing.JButton;
 
 import docking.ActionContext;
-import docking.DockingWindowManager;
 import docking.action.*;
 import docking.widgets.EventTrigger;
 import ghidra.util.HelpLocation;
-import ghidra.util.SystemUtilities;
+import ghidra.util.Swing;
 import ghidra.util.exception.AssertException;
 import resources.icons.EmptyIcon;
 
 /**
- * An action that can be in one of multiple states.   The button of this action has a 
- * drop-down icon that allows users to change the state of the button.  Also, by default, as
- * the user presses the button, it will execute the action corresponding to the current 
- * state.
- * 
- * <p>Warning: if you use this action in a toolbar, then be sure to call the 
- * {@link #MultiStateDockingAction(String, String, boolean) correct constructor}.  If you call
- * another constructor, or pass false for this boolean above, your 
- * {@link #doActionPerformed(ActionContext)} method will get called twice.
+ * An action that can be in one of multiple states.   The button of this action has a
+ * drop-down icon that allows users to change the state of the button.  As the user changes the 
+ * state of this action, {@link #actionStateChanged(ActionState, EventTrigger)} will be called.  
+ * Clients may also use the button of this action to respond to button presses by overriding 
+ * {@link #actionPerformed(ActionContext)}.
  *
+ * <p>This action is intended primarily for use as toolbar actions.  Alternatively, some clients 
+ * use this action to add a button to custom widgets.  In the custom usage case, clients should use
+ * {@link NonToolbarMultiStateAction}.
+ * 
  * @param <T> the type of the user data
  * @see MultiActionDockingAction
  */
@@ -50,125 +48,83 @@ public abstract class MultiStateDockingAction<T> extends DockingAction {
 	private static Icon EMPTY_ICON = new EmptyIcon(16, 16);
 
 	private List<ActionState<T>> actionStates = new ArrayList<>();
-	private int currentStateIndex = 0;
+	private int currentStateIndex = -1;
 	private MultiActionDockingActionIf multiActionGenerator;
 	private MultipleActionDockingToolbarButton multipleButton;
 
-	private boolean performActionOnPrimaryButtonClick = true;
+	private Icon defaultIcon;
 	private boolean useCheckboxForIcons;
-
-	// A listener that will get called when the button (not the popup) is clicked.  Toolbar
-	// actions do not use this listener. 
-	private ActionListener clickListener = e -> {
-		// stub for toolbar actions
-	};
 
 	/**
 	 * Call this constructor with this action will not be added to a toolbar
-	 * 
+	 *
 	 * @param name the action name
 	 * @param owner the owner
 	 * @see #MultiStateDockingAction(String, String, boolean)
 	 */
 	public MultiStateDockingAction(String name, String owner) {
-		this(name, owner, false);
-	}
-
-	/**
-	 * Use this constructor explicitly when this action is used in a toolbar, passing true 
-	 * for <code>isToolbarAction</code> (see the javadoc header note).
-	 * 
-	 * @param name the action name
-	 * @param owner the owner
-	 * @param isToolbarAction true if this action is a toolbar action
-	 */
-	protected MultiStateDockingAction(String name, String owner, boolean isToolbarAction) {
 		super(name, owner);
 		multiActionGenerator = context -> getStateActions();
 
 		// set this here so we don't have to check for null elsewhere
 		super.setToolBarData(new ToolBarData(null));
-
-		if (!isToolbarAction) {
-			// we need this listener to perform the action when the user click the button; 
-			// toolbar actions have their own listener
-			clickListener = e -> {
-				actionPerformed(getActionContext());
-			};
-		}
 	}
 
+	/**
+	 * Use this constructor explicitly when this action is used in a toolbar, passing true
+	 * for <code>isToolbarAction</code> (see the javadoc header note).
+	 *
+	 * @param name the action name
+	 * @param owner the owner
+	 * @param isToolbarAction true if this action is a toolbar action
+	 * @deprecated use {@link #MultiStateDockingAction(String, String)}
+	 */
+	@Deprecated(forRemoval = true, since = "10.2")
+	protected MultiStateDockingAction(String name, String owner, boolean isToolbarAction) {
+		this(name, owner);
+	}
+
+	/**
+	 * This method will be called as the user changes the selected button state
+	 * @param newActionState the newly selected state
+	 * @param trigger the source of the event
+	 */
 	public abstract void actionStateChanged(ActionState<T> newActionState, EventTrigger trigger);
 
 	/**
-	 * If <code>doPerformAction</code> is <code>true</code>, then, when the user clicks the
-	 * button and not the drop-down arrow, the {@link #doActionPerformed(ActionContext)}
-	 * method will be called.  If <code>doPerformAction</code> is <code>false</code>, then, when
-	 * the user clicks the button and not the drop-down arrow, the popup menu will be shown, just
-	 * as if the user had clicked the drop-down arrow.
-	 * <p>
-	 * Also, if the parameter is true, then the button will behave like a button in terms of
-	 * mouse feedback.  If false, then the button will behave more like a label.
+	 * This method is called when the user clicks the button <B>when this action is used as part of
+	 * the default {@link DockingAction} framework.</B> 
 	 * 
-	 * @param doPerformAction true to call {@link #doActionPerformed(ActionContext)} when the
-	 *        user presses the button for this action (not the drop-down menu; see above)
+	 * This is the callback to be overridden when the child wishes to respond to user button
+	 * presses that are on the button and not the drop-down.  The default behavior is to show the
+	 * popup menu when the button is clicked.
 	 */
-	public void setPerformActionOnPrimaryButtonClick(boolean doPerformAction) {
-		performActionOnPrimaryButtonClick = doPerformAction;
-		if (multipleButton == null) {
-			return;
-		}
-
-		multipleButton.setPerformActionOnButtonClick(performActionOnPrimaryButtonClick);
-
-		multipleButton.removeActionListener(clickListener);
-		if (performActionOnPrimaryButtonClick) {
-			multipleButton.addActionListener(clickListener);
-		}
+	@Override
+	public void actionPerformed(ActionContext context) {
+		Swing.runLater(() -> multipleButton.showPopup());
 	}
 
 	/**
 	 * Overrides the default icons for actions shown in popup menu of the multi-state action.  By
 	 * default, the popup menu items will use the icons as provided by the {@link ActionState}.
-	 * By passing true to this method, icons will not be used in the popup menu.  Instead, a 
+	 * By passing true to this method, icons will not be used in the popup menu.  Instead, a
 	 * checkbox icon will be used to show the active action state.
-	 * 
+	 *
 	 * @param useCheckboxForIcons true to use a checkbox
 	 */
 	public void setUseCheckboxForIcons(boolean useCheckboxForIcons) {
 		this.useCheckboxForIcons = useCheckboxForIcons;
 	}
 
-	@Override
-	public final void actionPerformed(ActionContext context) {
-		if (!performActionOnPrimaryButtonClick) {
-			SystemUtilities.runSwingLater(() -> multipleButton.showPopup(null));
-			return;
-		}
-
-		doActionPerformed(context);
-	}
-
 	/**
-	 * This is the callback to be overridden when the child wishes to respond to user button
-	 * presses that are on the button and not the drop-down.  This will only be called if
-	 * {@link #performActionOnPrimaryButtonClick} is true.
-	 * 
-	 * @param context the action context 
+	 * Sets the icon to use if the active action state does not supply an icon.  This is useful if
+	 * you wish for your action states to not use icon, but desire the action itself to have an
+	 * icon.
+	 *
+	 * @param icon the icon
 	 */
-	protected void doActionPerformed(ActionContext context) {
-		// override me to do work
-	}
-
-	private ActionContext getActionContext() {
-		DockingWindowManager manager = DockingWindowManager.getActiveInstance();
-
-		ActionContext context = manager.getActionContext(this);
-
-		if (context == null) {
-			context = new ActionContext();
-		}
-		return context;
+	public void setDefaultIcon(Icon icon) {
+		this.defaultIcon = icon;
 	}
 
 	protected List<DockingActionIf> getStateActions() {
@@ -178,7 +134,7 @@ public abstract class MultiStateDockingAction<T> extends DockingAction {
 
 			//@formatter:off
 			boolean isSelected = actionState == selectedState;
-			DockingActionIf a = useCheckboxForIcons ? 
+			DockingActionIf a = useCheckboxForIcons ?
 				new ActionStateToggleAction(actionState, isSelected) :
 			    new ActionStateAction(actionState, isSelected);
 			actions.add(a);
@@ -231,7 +187,12 @@ public abstract class MultiStateDockingAction<T> extends DockingAction {
 
 	public void setCurrentActionStateByUserData(T t) {
 		for (ActionState<T> actionState : actionStates) {
-			if (actionState.getUserData() == t) {
+
+			// Note: most clients will pass a T that is already in our list.  However, to be more
+			//       flexible, such as for clients with a T class of String, we should have no
+			//       problem using equals() here.
+			// if (actionState.getUserData() == t) {
+			if (actionState.getUserData().equals(t)) {
 				setCurrentActionState(actionState);
 				return;
 			}
@@ -253,10 +214,7 @@ public abstract class MultiStateDockingAction<T> extends DockingAction {
 		}
 		currentStateIndex = indexOf;
 
-		// we set the icon here to handle the odd case where this action is not used in a toolbar
-		if (multipleButton != null) {
-			setButtonState(actionState);
-		}
+		setButtonState(actionState);
 
 		ToolBarData tbd = getToolBarData();
 		tbd.setIcon(getIcon(actionState));
@@ -270,21 +228,17 @@ public abstract class MultiStateDockingAction<T> extends DockingAction {
 		if (icon != null) {
 			return icon;
 		}
+
+		if (defaultIcon != null) {
+			return defaultIcon;
+		}
+
 		return EMPTY_ICON;
 	}
 
 	@Override
 	public JButton doCreateButton() {
 		multipleButton = new MultipleActionDockingToolbarButton(multiActionGenerator);
-		multipleButton.setPerformActionOnButtonClick(performActionOnPrimaryButtonClick);
-
-		if (performActionOnPrimaryButtonClick) {
-			multipleButton.addActionListener(clickListener);
-		}
-		else {
-			multipleButton.removeActionListener(clickListener);
-		}
-
 		if (currentStateIndex >= 0) {
 			ActionState<T> actionState = actionStates.get(currentStateIndex);
 			setButtonState(actionState);
@@ -294,6 +248,16 @@ public abstract class MultiStateDockingAction<T> extends DockingAction {
 	}
 
 	private void setButtonState(ActionState<T> actionState) {
+
+		if (multipleButton == null) {
+			return;
+		}
+
+		if (actionState == null) {
+			multipleButton.setIcon(null);
+			multipleButton.setToolTipText(null);
+			return;
+		}
 
 		Icon icon = getIcon(actionState);
 		multipleButton.setIcon(icon);
@@ -315,7 +279,14 @@ public abstract class MultiStateDockingAction<T> extends DockingAction {
 	}
 
 	public String getToolTipText() {
+		if (actionStates.isEmpty()) {
+			return getName() + ": <no action states installed>";
+		}
 		return getName() + ": " + getCurrentState().getName();
+	}
+
+	protected void showPopup() {
+		multipleButton.showPopup();
 	}
 
 //==================================================================================================
@@ -333,8 +304,7 @@ public abstract class MultiStateDockingAction<T> extends DockingAction {
 
 			setSelected(isSelected);
 
-			setMenuBarData(
-				new MenuData(new String[] { actionState.getName() }));
+			setMenuBarData(new MenuData(new String[] { actionState.getName() }));
 			HelpLocation helpLocation = actionState.getHelpLocation();
 			if (helpLocation != null) {
 				setHelpLocation(helpLocation);

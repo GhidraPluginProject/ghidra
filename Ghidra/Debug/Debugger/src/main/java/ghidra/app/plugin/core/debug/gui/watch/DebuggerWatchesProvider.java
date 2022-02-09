@@ -18,11 +18,12 @@ package ghidra.app.plugin.core.debug.gui.watch;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
-import java.util.ArrayList;
+import java.util.*;
 import java.util.List;
-import java.util.Objects;
+import java.util.Map.Entry;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import javax.swing.*;
 import javax.swing.table.TableColumn;
@@ -31,13 +32,19 @@ import javax.swing.table.TableColumnModel;
 import docking.ActionContext;
 import docking.WindowPosition;
 import docking.action.DockingAction;
+import docking.action.ToggleDockingAction;
 import docking.widgets.table.*;
 import docking.widgets.table.DefaultEnumeratedColumnTableModel.EnumeratedTableColumn;
+import ghidra.app.context.ListingActionContext;
+import ghidra.app.context.ProgramLocationActionContext;
 import ghidra.app.plugin.core.debug.DebuggerCoordinates;
 import ghidra.app.plugin.core.debug.DebuggerPluginPackage;
 import ghidra.app.plugin.core.debug.gui.DebuggerResources;
 import ghidra.app.plugin.core.debug.gui.DebuggerResources.*;
-import ghidra.app.services.DebuggerListingService;
+import ghidra.app.plugin.core.debug.gui.register.DebuggerRegisterActionContext;
+import ghidra.app.plugin.core.debug.gui.register.RegisterRow;
+import ghidra.app.services.*;
+import ghidra.app.services.DebuggerStaticMappingService.MappedAddressRange;
 import ghidra.async.AsyncDebouncer;
 import ghidra.async.AsyncTimer;
 import ghidra.base.widgets.table.DataTypeTableCellEditor;
@@ -50,16 +57,20 @@ import ghidra.framework.options.annotation.HelpInfo;
 import ghidra.framework.plugintool.AutoService;
 import ghidra.framework.plugintool.ComponentProviderAdapter;
 import ghidra.framework.plugintool.annotation.AutoServiceConsumed;
+import ghidra.pcode.exec.trace.TraceSleighUtils;
 import ghidra.program.model.address.*;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeConflictException;
-import ghidra.program.model.listing.Data;
-import ghidra.program.model.listing.Listing;
+import ghidra.program.model.lang.Register;
+import ghidra.program.model.listing.*;
 import ghidra.program.model.util.CodeUnitInsertionException;
+import ghidra.program.util.ProgramLocation;
 import ghidra.program.util.ProgramSelection;
 import ghidra.trace.model.*;
 import ghidra.trace.model.Trace.TraceMemoryBytesChangeType;
 import ghidra.trace.model.Trace.TraceMemoryStateChangeType;
+import ghidra.trace.model.program.TraceProgramView;
+import ghidra.trace.model.time.schedule.TraceSchedule;
 import ghidra.trace.util.TraceAddressSpace;
 import ghidra.util.Msg;
 import ghidra.util.Swing;
@@ -75,7 +86,7 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 	protected enum WatchTableColumns implements EnumeratedTableColumn<WatchTableColumns, WatchRow> {
 		EXPRESSION("Expression", String.class, WatchRow::getExpression, WatchRow::setExpression),
 		ADDRESS("Address", Address.class, WatchRow::getAddress),
-		VALUE("Value", String.class, WatchRow::getRawValueString),
+		VALUE("Value", String.class, WatchRow::getRawValueString, WatchRow::setRawValueString, WatchRow::isValueEditable),
 		TYPE("Type", DataType.class, WatchRow::getDataType, WatchRow::setDataType),
 		REPR("Repr", String.class, WatchRow::getValueString),
 		ERROR("Error", String.class, WatchRow::getErrorMessage);
@@ -83,19 +94,26 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 		private final String header;
 		private final Function<WatchRow, ?> getter;
 		private final BiConsumer<WatchRow, Object> setter;
+		private final Predicate<WatchRow> editable;
 		private final Class<?> cls;
 
 		@SuppressWarnings("unchecked")
 		<T> WatchTableColumns(String header, Class<T> cls, Function<WatchRow, T> getter,
-				BiConsumer<WatchRow, T> setter) {
+				BiConsumer<WatchRow, T> setter, Predicate<WatchRow> editable) {
 			this.header = header;
 			this.cls = cls;
 			this.getter = getter;
 			this.setter = (BiConsumer<WatchRow, Object>) setter;
+			this.editable = editable;
+		}
+
+		<T> WatchTableColumns(String header, Class<T> cls, Function<WatchRow, T> getter,
+				BiConsumer<WatchRow, T> setter) {
+			this(header, cls, getter, setter, null);
 		}
 
 		<T> WatchTableColumns(String header, Class<T> cls, Function<WatchRow, T> getter) {
-			this(header, cls, getter, null);
+			this(header, cls, getter, null, null);
 		}
 
 		@Override
@@ -120,7 +138,7 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 
 		@Override
 		public boolean isEditable(WatchRow row) {
-			return setter != null;
+			return setter != null && (editable == null || editable.test(row));
 		}
 	}
 
@@ -230,8 +248,12 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 	private Trace currentTrace; // Copy for transition
 
 	@AutoServiceConsumed
-	private DebuggerListingService listingService; // TODO: For goto and selection
+	private DebuggerListingService listingService; // For goto and selection
 	// TODO: Allow address marking
+	@AutoServiceConsumed
+	private DebuggerTraceManagerService traceManager; // For goto time (emu mods)
+	@AutoServiceConsumed
+	private DebuggerStaticMappingService mappingService; // For listing action
 	@SuppressWarnings("unused")
 	private final AutoService.Wiring autoServiceWiring;
 
@@ -267,11 +289,15 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 	protected GhidraTable watchTable;
 	protected GhidraTableFilterPanel<WatchRow> watchFilterPanel;
 
+	ToggleDockingAction actionEnableEdits;
 	DockingAction actionApplyDataType;
 	DockingAction actionSelectRange;
 	DockingAction actionSelectAllReads;
 	DockingAction actionAdd;
 	DockingAction actionRemove;
+
+	DockingAction actionAddFromLocation;
+	DockingAction actionAddFromRegister;
 
 	private DebuggerWatchActionContext myActionContext;
 
@@ -322,24 +348,7 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 				if (e.getClickCount() != 2 || e.getButton() != MouseEvent.BUTTON1) {
 					return;
 				}
-				if (myActionContext == null) {
-					return;
-				}
-				WatchRow row = myActionContext.getWatchRow();
-				if (row == null) {
-					return;
-				}
-				Throwable error = row.getError();
-				if (error != null) {
-					Msg.showError(this, getComponent(), "Evaluation error",
-						"Could not evaluate watch", error);
-					return;
-				}
-				Address address = myActionContext.getWatchRow().getAddress();
-				if (listingService == null || address == null || !address.isMemoryAddress()) {
-					return;
-				}
-				listingService.goTo(address, true);
+				navigateToSelectedWatch();
 			}
 		});
 
@@ -359,7 +368,50 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 		super.contextChanged();
 	}
 
+	protected void navigateToSelectedWatch() {
+		if (myActionContext == null) {
+			return;
+		}
+		WatchRow row = myActionContext.getWatchRow();
+		if (row == null) {
+			return;
+		}
+		int modelCol = watchTable.convertColumnIndexToModel(watchTable.getSelectedColumn());
+		Throwable error = row.getError(); // I don't care the selected column for errors
+		if (error != null) {
+			Msg.showError(this, getComponent(), "Evaluation error",
+				"Could not evaluate watch", error);
+		}
+		else if (modelCol == WatchTableColumns.ADDRESS.ordinal()) {
+			Address address = row.getAddress();
+			if (address != null) {
+				navigateToAddress(address);
+			}
+		}
+		else if (modelCol == WatchTableColumns.REPR.ordinal()) {
+			Object val = row.getValueObj();
+			if (val instanceof Address) {
+				navigateToAddress((Address) val);
+			}
+		}
+	}
+
+	protected void navigateToAddress(Address address) {
+		if (listingService == null) {
+			return;
+		}
+		if (address.isMemoryAddress()) {
+			listingService.goTo(address, true);
+			return;
+		}
+	}
+
 	protected void createActions() {
+		actionEnableEdits = DebuggerResources.EnableEditsAction.builder(plugin)
+				.enabledWhen(c -> current.getTrace() != null)
+				.onAction(c -> {
+				})
+				.buildAndInstallLocal(this);
 		actionApplyDataType = ApplyDataTypeAction.builder(plugin)
 				.withContext(DebuggerWatchActionContext.class)
 				.enabledWhen(ctx -> current.getTrace() != null && selHasDataType(ctx))
@@ -385,6 +437,18 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 				.enabledWhen(ctx -> !ctx.getWatchRows().isEmpty())
 				.onAction(this::activatedRemove)
 				.buildAndInstallLocal(this);
+
+		// Pop-up context actions
+		actionAddFromLocation = WatchAction.builder(plugin)
+				.withContext(ProgramLocationActionContext.class)
+				.enabledWhen(this::hasDynamicLocation)
+				.onAction(this::activatedAddFromLocation)
+				.buildAndInstall(tool);
+		actionAddFromRegister = WatchAction.builder(plugin)
+				.withContext(DebuggerRegisterActionContext.class)
+				.enabledWhen(this::hasValidWatchRegister)
+				.onAction(this::activatedAddFromRegister)
+				.buildAndInstall(tool);
 	}
 
 	protected boolean selHasDataType(DebuggerWatchActionContext ctx) {
@@ -511,10 +575,135 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 		watchTableModel.deleteWith(context.getWatchRows()::contains);
 	}
 
+	private ProgramLocation getDynamicLocation(ProgramLocation someLoc) {
+		if (someLoc.getProgram() instanceof TraceProgramView) {
+			return someLoc;
+		}
+		return mappingService.getDynamicLocationFromStatic(current.getView(), someLoc);
+	}
+
+	private AddressSetView getDynamicAddresses(Program program, AddressSetView set) {
+		if (program instanceof TraceProgramView) {
+			return set;
+		}
+		if (set == null) {
+			return null;
+		}
+		AddressSet result = new AddressSet();
+		for (Entry<TraceSpan, Collection<MappedAddressRange>> ent : mappingService
+				.getOpenMappedViews(program, set)
+				.entrySet()) {
+			if (ent.getKey().getTrace() != current.getTrace()) {
+				continue;
+			}
+			if (!ent.getKey().getSpan().contains(current.getSnap())) {
+				continue;
+			}
+			for (MappedAddressRange rng : ent.getValue()) {
+				result.add(rng.getDestinationAddressRange());
+			}
+		}
+		return result;
+	}
+
+	private boolean hasDynamicLocation(ProgramLocationActionContext context) {
+		ProgramLocation dynLoc = getDynamicLocation(context.getLocation());
+		return dynLoc != null;
+	}
+
+	private boolean tryForSelection(ProgramLocationActionContext context) {
+		AddressSetView dynSel = getDynamicAddresses(context.getProgram(), context.getSelection());
+		if (dynSel == null || dynSel.isEmpty()) {
+			return false;
+		}
+		for (AddressRange rng : dynSel) {
+			addWatch(TraceSleighUtils
+					.generateExpressionForRange(current.getTrace().getBaseLanguage(), rng));
+		}
+		return true;
+	}
+
+	private boolean tryForDataInListing(ProgramLocationActionContext context) {
+		if (!(context instanceof ListingActionContext)) {
+			return false;
+		}
+		ListingActionContext lac = (ListingActionContext) context;
+		CodeUnit cu = lac.getCodeUnit();
+		if (cu == null) {
+			return false;
+		}
+		AddressSet cuAs = new AddressSet();
+		cuAs.add(cu.getMinAddress(), cu.getMaxAddress());
+		AddressSetView dynCuAs = getDynamicAddresses(context.getProgram(), cuAs);
+
+		// Verify mapping is complete and contiguous
+		if (dynCuAs.getNumAddressRanges() != 1) {
+			return false;
+		}
+		AddressRange dynCuRng = dynCuAs.getFirstRange();
+		if (dynCuRng.getLength() != cu.getLength()) {
+			return false;
+		}
+
+		WatchRow row = addWatch(TraceSleighUtils
+				.generateExpressionForRange(current.getTrace().getBaseLanguage(), dynCuRng));
+		if (cu instanceof Data) {
+			Data data = (Data) cu;
+			// TODO: Problems may arise if trace and program have different data organizations
+			row.setDataType(data.getDataType());
+		}
+		return true;
+	}
+
+	private boolean trySingleAddress(ProgramLocationActionContext context) {
+		ProgramLocation dynLoc = getDynamicLocation(context.getLocation());
+		if (dynLoc == null) {
+			return false;
+		}
+		addWatch(TraceSleighUtils.generateExpressionForRange(current.getTrace().getBaseLanguage(),
+			new AddressRangeImpl(dynLoc.getAddress(), dynLoc.getAddress())));
+		return true;
+	}
+
+	private void activatedAddFromLocation(ProgramLocationActionContext context) {
+		if (tryForSelection(context)) {
+			return;
+		}
+		if (tryForDataInListing(context)) {
+			return;
+		}
+		trySingleAddress(context);
+	}
+
+	private boolean hasValidWatchRegister(DebuggerRegisterActionContext context) {
+		RegisterRow row = context.getSelected();
+		if (row == null) {
+			return false;
+		}
+		if (row.getRegister().isProcessorContext()) {
+			return false;
+		}
+		return true;
+	}
+
+	private void activatedAddFromRegister(DebuggerRegisterActionContext context) {
+		RegisterRow regRow = context.getSelected();
+		if (regRow == null) {
+			return;
+		}
+		Register reg = regRow.getRegister();
+		if (reg.isProcessorContext()) {
+			return;
+		}
+		WatchRow watchRow = addWatch(reg.getName());
+		watchRow.setDataType(regRow.getDataType());
+	}
+
 	public WatchRow addWatch(String expression) {
-		WatchRow row = new WatchRow(this, expression);
+		WatchRow row = new WatchRow(this, "");
 		row.setCoordinates(current);
 		watchTableModel.add(row);
+		row.setExpression(expression);
 		return row;
 	}
 
@@ -621,5 +810,13 @@ public class DebuggerWatchesProvider extends ComponentProviderAdapter {
 			rows.add(r);
 		}
 		watchTableModel.addAll(rows);
+	}
+
+	public boolean isEditsEnabled() {
+		return actionEnableEdits.isSelected();
+	}
+
+	public void goToTime(TraceSchedule time) {
+		traceManager.activateTime(time);
 	}
 }

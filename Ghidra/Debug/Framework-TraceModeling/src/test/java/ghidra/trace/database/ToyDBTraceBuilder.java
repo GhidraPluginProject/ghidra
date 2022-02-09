@@ -26,12 +26,14 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collection;
-import java.util.Objects;
+import java.util.*;
 
 import com.google.common.collect.Range;
 
 import db.DBHandle;
+import ghidra.app.plugin.processors.sleigh.SleighLanguage;
+import ghidra.pcode.exec.*;
+import ghidra.pcode.exec.trace.TraceSleighUtils;
 import ghidra.program.disassemble.Disassembler;
 import ghidra.program.model.address.*;
 import ghidra.program.model.data.DataType;
@@ -47,9 +49,10 @@ import ghidra.trace.database.language.DBTraceGuestLanguage;
 import ghidra.trace.database.listing.*;
 import ghidra.trace.database.memory.DBTraceMemoryManager;
 import ghidra.trace.database.symbol.DBTraceReference;
-import ghidra.trace.database.thread.DBTraceThread;
 import ghidra.trace.database.thread.DBTraceThreadManager;
+import ghidra.trace.model.*;
 import ghidra.trace.model.language.TraceGuestLanguage;
+import ghidra.trace.model.thread.TraceThread;
 import ghidra.util.Msg;
 import ghidra.util.database.DBOpenMode;
 import ghidra.util.database.UndoableTransaction;
@@ -74,36 +77,85 @@ public class ToyDBTraceBuilder implements AutoCloseable {
 		this.trace = new DBTrace(name, language.getDefaultCompilerSpec(), this);
 	}
 
-	public Address addr(long offset) {
-		return language.getDefaultSpace().getAddress(offset);
+	public ToyDBTraceBuilder(Trace trace) {
+		this.language = trace.getBaseLanguage();
+		this.trace = (DBTrace) trace;
+		trace.addConsumer(this);
 	}
 
-	public Address data(long offset) {
-		return language.getDefaultDataSpace().getAddress(offset);
+	public void exec(long snap, int frame, TraceThread thread, List<String> sleigh) {
+		PcodeProgram program = SleighProgramCompiler.compileProgram((SleighLanguage) language,
+			"builder", sleigh, SleighUseropLibrary.nil());
+		TraceSleighUtils.buildByteExecutor(trace, snap, thread, frame)
+				.execute(program, SleighUseropLibrary.nil());
+	}
+
+	public Address addr(AddressSpace space, long offset) {
+		return space.getAddress(offset);
+	}
+
+	public Address addr(Language lang, long offset) {
+		return addr(lang.getDefaultSpace(), offset);
+	}
+
+	public Address addr(long offset) {
+		return addr(language, offset);
 	}
 
 	public Address addr(TraceGuestLanguage lang, long offset) {
 		return lang.getLanguage().getDefaultSpace().getAddress(offset);
 	}
 
+	public Address data(Language lang, long offset) {
+		return addr(lang.getDefaultDataSpace(), offset);
+	}
+
+	public Address data(long offset) {
+		return data(language, offset);
+	}
+
 	public Address data(TraceGuestLanguage lang, long offset) {
-		return lang.getLanguage().getDefaultDataSpace().getAddress(offset);
+		return data(lang.getLanguage(), offset);
+	}
+
+	public AddressRange range(Address start, Address end) {
+		return new AddressRangeImpl(start, end);
+	}
+
+	public AddressRange range(AddressSpace space, long start, long end) {
+		return range(addr(space, start), addr(space, end));
+	}
+
+	public AddressRange range(Language lang, long start, long end) {
+		return range(lang.getDefaultSpace(), start, end);
 	}
 
 	public AddressRange range(long start, long end) {
-		return new AddressRangeImpl(addr(start), addr(end));
+		return range(language, start, end);
+	}
+
+	public AddressRange range(long singleton) {
+		return range(singleton, singleton);
+	}
+
+	public TraceAddressSnapRange srange(long snap, long start, long end) {
+		return new ImmutableTraceAddressSnapRange(addr(start), addr(end), snap, snap);
+	}
+
+	public AddressRange drng(Language lang, long start, long end) {
+		return range(language.getDefaultDataSpace(), start, end);
 	}
 
 	public AddressRange drng(long start, long end) {
-		return new AddressRangeImpl(data(start), data(end));
+		return drng(language, start, end);
 	}
 
 	public AddressRange range(TraceGuestLanguage lang, long start, long end) {
-		return new AddressRangeImpl(addr(lang, start), addr(lang, end));
+		return range(lang.getLanguage(), start, end);
 	}
 
 	public AddressRange drng(TraceGuestLanguage lang, long start, long end) {
-		return new AddressRangeImpl(data(lang, start), data(lang, end));
+		return drng(lang.getLanguage(), start, end);
 	}
 
 	public AddressSetView set(AddressRange... ranges) {
@@ -163,7 +215,7 @@ public class ToyDBTraceBuilder implements AutoCloseable {
 			String typeName, String category, String comment) throws DuplicateNameException {
 		Register register = language.getRegister(registerName);
 		assertNotNull(register);
-		DBTraceThread thread = getOrAddThread(threadName, snap);
+		TraceThread thread = getOrAddThread(threadName, snap);
 		DBTraceBookmarkType type = getOrAddBookmarkType(typeName);
 		DBTraceBookmarkManager manager = trace.getBookmarkManager();
 		DBTraceBookmarkRegisterSpace space = manager.getBookmarkRegisterSpace(thread, true);
@@ -229,14 +281,14 @@ public class ToyDBTraceBuilder implements AutoCloseable {
 		return instruction;
 	}
 
-	public DBTraceThread getOrAddThread(String name, long creationSnap)
+	public TraceThread getOrAddThread(String name, long creationSnap)
 			throws DuplicateNameException {
 		DBTraceThreadManager manager = trace.getThreadManager();
-		Collection<? extends DBTraceThread> threads = manager.getThreadsByPath(name);
+		Collection<? extends TraceThread> threads = manager.getThreadsByPath(name);
 		if (threads != null && !threads.isEmpty()) {
 			return threads.iterator().next();
 		}
-		return (DBTraceThread) manager.createThread(name, creationSnap);
+		return manager.createThread(name, creationSnap);
 	}
 
 	public DBTraceReference addMemoryReference(long creationSnap, Address from, Address to) {
@@ -285,7 +337,9 @@ public class ToyDBTraceBuilder implements AutoCloseable {
 
 	@Override
 	public void close() {
-		trace.release(this);
+		if (trace.getConsumerList().contains(this)) {
+			trace.release(this);
+		}
 	}
 
 	public Language getLanguage(String id) throws LanguageNotFoundException {

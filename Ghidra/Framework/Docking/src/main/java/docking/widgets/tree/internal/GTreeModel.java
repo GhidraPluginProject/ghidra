@@ -15,8 +15,7 @@
  */
 package docking.widgets.tree.internal;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 import javax.swing.event.TreeModelEvent;
 import javax.swing.event.TreeModelListener;
@@ -31,7 +30,7 @@ import ghidra.util.SystemUtilities;
 public class GTreeModel implements TreeModel {
 
 	private volatile GTreeNode root;
-	private List<TreeModelListener> listeners = new ArrayList<TreeModelListener>();
+	private List<TreeModelListener> listeners = new ArrayList<>();
 	private boolean isFiringNodeStructureChanged;
 	private volatile boolean eventsEnabled = true;
 
@@ -83,9 +82,9 @@ public class GTreeModel implements TreeModel {
 			// This can happen if the client code mutates the children of this node in a background
 			// thread such that there are fewer child nodes on this node, and then before the tree
 			// is notified, the JTree attempts to access a child that is no longer present. The
-			// GTree design specifically allows this situation to occur as a trade off for 
+			// GTree design specifically allows this situation to occur as a trade off for
 			// better performance when performing bulk operations (such as filtering).  If this
-			// does occur, this can be handled easily by temporarily returning a dummy node and 
+			// does occur, this can be handled easily by temporarily returning a dummy node and
 			// scheduling a node structure changed event to reset the JTree.
 			Swing.runLater(() -> fireNodeStructureChanged((GTreeNode) parent));
 			return new InProgressGTreeNode();
@@ -125,19 +124,25 @@ public class GTreeModel implements TreeModel {
 			SystemUtilities.assertThisIsTheSwingThread(
 				"GTreeModel.fireNodeStructuredChanged() must be " + "called from the AWT thread");
 
-			GTreeNode node = convertToViewNode(changedNode);
-			if (node == null) {
+			// If the tree is filtered and this is called on the original node, we have to
+			// translate the node to a view node (one the jtree knows).
+			GTreeNode viewNode = convertToViewNode(changedNode);
+			if (viewNode == null) {
 				return;
 			}
 
-			if (node != changedNode) {
-				// Note: calling setChildren() here triggers another call to this method.  But, 
-				//       the 'isFiringNodeStructureChanged' flag prevents that notification from
-				//       happening.  So, we still have to fire the event below.
-				node.setChildren(null);
+			if (viewNode != changedNode) {
+				// This means we are filtered and since the original node's children are invalid,
+				// then the filtered children are invalid also. So clear out the children by
+				// setting an empty list as we don't want to trigger the node to regenerate its
+				// children which happens if you set the children to null.
+				//
+				// This won't cause a second event to the jtree because we are protected
+				// by the isFiringNodeStructureChanged variable
+				viewNode.setChildren(Collections.emptyList());
 			}
 
-			TreeModelEvent event = new TreeModelEvent(this, node.getTreePath());
+			TreeModelEvent event = new TreeModelEvent(this, viewNode.getTreePath());
 			for (TreeModelListener listener : listeners) {
 				listener.treeStructureChanged(event);
 			}
@@ -165,9 +170,9 @@ public class GTreeModel implements TreeModel {
 		if (viewNode == null) {
 			return;
 		}
-		// Note - we are passing in the treepath of the node that changed.  The javadocs in 
+		// Note - we are passing in the treepath of the node that changed.  The javadocs in
 		// TreemodelListener seems to imply that you need to pass in the treepath of the parent
-		// of the node that changed and then the indexes of the children that changed. But this 
+		// of the node that changed and then the indexes of the children that changed. But this
 		// works and is cheaper then computing the index of the node that changed.
 		TreeModelEvent event = new TreeModelEvent(this, viewNode.getTreePath());
 
@@ -242,7 +247,7 @@ public class GTreeModel implements TreeModel {
 		}
 		GTree tree = root.getTree();
 		if (tree != null) {
-			return tree.getViewNodeForPath(node.getTreePath());
+			return tree.getViewNode(node);
 		}
 		return null;
 	}

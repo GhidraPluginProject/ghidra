@@ -15,7 +15,7 @@
  */
 package ghidra.formats.gfilesystem;
 
-import ghidra.util.SystemUtilities;
+import java.util.Objects;
 
 /**
  * Base implementation of file in a {@link GFileSystem filesystem}.
@@ -76,6 +76,12 @@ public class GFileImpl implements GFile {
 	public static GFileImpl fromPathString(GFileSystem fileSystem, GFile parent, String path,
 			FSRL fsrl, boolean isDirectory, long length) {
 		String[] split = path.split(FSUtilities.SEPARATOR);
+		if (split.length >= 3 && split[0].isEmpty() && split[1].isEmpty() && !split[2].isEmpty()) {
+			// The path was in UNC format, either //unc or \\unc.
+			// Put a unc prefix "//" back into the element that has the unc name.  The leading empty
+			// elements will be skipped when building the parentage.
+			split[2] = "//" + split[2];
+		}
 		for (int i = 0; i < split.length - 1; ++i) {
 			if (split[i].length() == 0) {
 				continue;
@@ -140,11 +146,11 @@ public class GFileImpl implements GFile {
 		return new GFileImpl(fileSystem, parent, isDirectory, length, fsrl);
 	}
 
-	private GFileSystem fileSystem;
-	private GFile parentFile;
-	private boolean isDirectory = false;
-	private long length = -1;
-	private FSRL fsrl;
+	private final GFileSystem fileSystem;
+	private final GFile parentFile;
+	private final boolean isDirectory;
+	private long length;
+	private final FSRL fsrl;
 
 	/**
 	 * Protected constructor, use static helper methods to create new instances.
@@ -198,21 +204,6 @@ public class GFileImpl implements GFile {
 	}
 
 	@Override
-	public boolean equals(Object obj) {
-		if (!(obj instanceof GFile)) {
-			return false;
-		}
-
-		GFile other = (GFile) obj;
-		return SystemUtilities.isEqual(fsrl, other.getFSRL()) && isDirectory == other.isDirectory();
-	}
-
-	@Override
-	public int hashCode() {
-		return fsrl.hashCode() ^ Boolean.hashCode(isDirectory());
-	}
-
-	@Override
 	public String getPath() {
 		return fsrl.getPath();
 	}
@@ -226,7 +217,22 @@ public class GFileImpl implements GFile {
 		return fsrl;
 	}
 
-	public void setFSRL(FSRL fsrl) {
-		this.fsrl = fsrl;
+	@Override
+	public int hashCode() {
+		return Objects.hash(fileSystem, fsrl.getPath(), isDirectory);
+	}
+
+	@Override
+	public boolean equals(Object obj) {
+		if (this == obj) {
+			return true;
+		}
+		if (!(obj instanceof GFile)) {
+			return false;
+		}
+		GFile other = (GFile) obj;
+		return Objects.equals(fileSystem, other.getFilesystem()) &&
+			Objects.equals(fsrl.getPath(), other.getFSRL().getPath()) &&
+			isDirectory == other.isDirectory();
 	}
 }

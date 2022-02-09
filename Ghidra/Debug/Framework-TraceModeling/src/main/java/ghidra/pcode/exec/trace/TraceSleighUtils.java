@@ -24,6 +24,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import ghidra.app.plugin.processors.sleigh.SleighLanguage;
 import ghidra.pcode.exec.*;
 import ghidra.pcode.utils.Utils;
+import ghidra.program.model.address.AddressRange;
 import ghidra.program.model.address.AddressSpace;
 import ghidra.program.model.lang.Language;
 import ghidra.trace.model.Trace;
@@ -51,7 +52,11 @@ public enum TraceSleighUtils {
 		TraceBytesPcodeExecutorState state =
 			new TraceBytesPcodeExecutorState(trace, snap, thread, frame);
 		Language language = trace.getBaseLanguage();
-		return new PcodeExecutor<>(language, BytesPcodeArithmetic.forLanguage(language), state);
+		if (!(language instanceof SleighLanguage)) {
+			throw new IllegalArgumentException("Trace must use a SLEIGH language");
+		}
+		return new PcodeExecutor<>((SleighLanguage) language,
+			BytesPcodeArithmetic.forLanguage(language), state);
 	}
 
 	public static PcodeExecutor<Pair<byte[], TraceMemoryState>> buildByteWithStateExecutor(
@@ -60,9 +65,12 @@ public enum TraceSleighUtils {
 			new TraceBytesPcodeExecutorState(trace, snap, thread, frame);
 		PcodeExecutorState<Pair<byte[], TraceMemoryState>> paired = state.withMemoryState();
 		Language language = trace.getBaseLanguage();
-		return new PcodeExecutor<>(language, new PairedPcodeArithmetic<>(
-			BytesPcodeArithmetic.forLanguage(language),
-			TraceMemoryStatePcodeArithmetic.INSTANCE), paired);
+		if (!(language instanceof SleighLanguage)) {
+			throw new IllegalArgumentException("Trace must use a SLEIGH language");
+		}
+		return new PcodeExecutor<>((SleighLanguage) language, new PairedPcodeArithmetic<>(
+			BytesPcodeArithmetic.forLanguage(language), TraceMemoryStatePcodeArithmetic.INSTANCE),
+			paired);
 	}
 
 	public static byte[] evaluateBytes(SleighExpression expr, Trace trace, long snap,
@@ -147,5 +155,16 @@ public enum TraceSleighUtils {
 		return evaluateWithState(
 			SleighProgramCompiler.compileExpression((SleighLanguage) language, expr),
 			trace, snap, thread, frame);
+	}
+
+	public static String generateExpressionForRange(Language language, AddressRange range) {
+		AddressSpace space = range.getAddressSpace();
+		long length = range.getLength();
+		long offset = range.getMinAddress().getOffset();
+		int ptrSize = space.getPointerSize();
+		if (language != null && language.getDefaultSpace() == space) {
+			return String.format("*:%d 0x%08x:%d", length, offset, ptrSize);
+		}
+		return String.format("*[%s]:%d 0x%08x:%d", space.getName(), length, offset, ptrSize);
 	}
 }

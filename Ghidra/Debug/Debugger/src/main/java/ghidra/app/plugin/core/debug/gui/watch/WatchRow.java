@@ -32,18 +32,22 @@ import ghidra.pcode.utils.Utils;
 import ghidra.program.model.address.*;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.lang.Language;
+import ghidra.program.model.lang.Register;
 import ghidra.program.model.mem.ByteMemBufferImpl;
 import ghidra.program.model.mem.MemBuffer;
 import ghidra.trace.model.Trace;
 import ghidra.trace.model.memory.TraceMemorySpace;
 import ghidra.trace.model.memory.TraceMemoryState;
 import ghidra.trace.model.thread.TraceThread;
-import ghidra.util.NumericUtilities;
-import ghidra.util.Swing;
+import ghidra.trace.model.time.schedule.TraceSchedule;
+import ghidra.util.*;
 
 public class WatchRow {
+	public static final int TRUNCATE_BYTES_LENGTH = 64;
+
 	private final DebuggerWatchesProvider provider;
 	private Trace trace;
+	private DebuggerCoordinates coordinates;
 	private SleighLanguage language;
 	private PcodeExecutor<Pair<byte[], TraceMemoryState>> executorWithState;
 	private ReadDepsPcodeExecutor executorWithAddress;
@@ -60,6 +64,7 @@ public class WatchRow {
 	private byte[] value;
 	private byte[] prevValue; // Value at previous coordinates
 	private String valueString;
+	private Object valueObj;
 	private Throwable error = null;
 
 	public WatchRow(DebuggerWatchesProvider provider, String expression) {
@@ -73,6 +78,7 @@ public class WatchRow {
 		reads = null;
 		value = null;
 		valueString = null;
+		valueObj = null;
 	}
 
 	protected void recompile() {
@@ -121,19 +127,28 @@ public class WatchRow {
 			address = valueWithAddress.getRight();
 			reads = executorWithAddress.getReads();
 
-			valueString = parseAsDataType();
+			valueObj = parseAsDataTypeObj();
+			valueString = parseAsDataTypeStr();
 		}
 		catch (Exception e) {
 			error = e;
 		}
 	}
 
-	protected String parseAsDataType() {
+	protected String parseAsDataTypeStr() {
 		if (dataType == null || value == null) {
 			return "";
 		}
 		MemBuffer buffer = new ByteMemBufferImpl(address, value, language.isBigEndian());
 		return dataType.getRepresentation(buffer, SettingsImpl.NO_SETTINGS, value.length);
+	}
+	
+	protected Object parseAsDataTypeObj() {
+		if (dataType == null || value == null) {
+			return null;
+		}
+		MemBuffer buffer = new ByteMemBufferImpl(address, value, language.isBigEndian());
+		return dataType.getValue(buffer, SettingsImpl.NO_SETTINGS, value.length);
 	}
 
 	public static class ReadDepsTraceBytesPcodeExecutorState
@@ -182,7 +197,7 @@ public class WatchRow {
 		private ReadDepsTraceBytesPcodeExecutorState depsState;
 
 		public ReadDepsPcodeExecutor(ReadDepsTraceBytesPcodeExecutorState depsState,
-				Language language, PairedPcodeArithmetic<byte[], Address> arithmetic,
+				SleighLanguage language, PairedPcodeArithmetic<byte[], Address> arithmetic,
 				PcodeExecutorState<Pair<byte[], Address>> state) {
 			super(language, arithmetic, state);
 			this.depsState = depsState;
@@ -207,17 +222,21 @@ public class WatchRow {
 			new ReadDepsTraceBytesPcodeExecutorState(trace, coordinates.getViewSnap(),
 				coordinates.getThread(), coordinates.getFrame());
 		Language language = trace.getBaseLanguage();
+		if (!(language instanceof SleighLanguage)) {
+			throw new IllegalArgumentException("Watch expressions require a SLEIGH language");
+		}
 		PcodeExecutorState<Pair<byte[], Address>> paired =
 			state.paired(new AddressOfPcodeExecutorState(language.isBigEndian()));
 		PairedPcodeArithmetic<byte[], Address> arithmetic = new PairedPcodeArithmetic<>(
 			BytesPcodeArithmetic.forLanguage(language), AddressOfPcodeArithmetic.INSTANCE);
-		return new ReadDepsPcodeExecutor(state, language, arithmetic, paired);
+		return new ReadDepsPcodeExecutor(state, (SleighLanguage) language, arithmetic, paired);
 	}
 
 	public void setCoordinates(DebuggerCoordinates coordinates) {
 		// NB. Caller has already verified coordinates actually changed
 		prevValue = value;
 		trace = coordinates.getTrace();
+		this.coordinates = coordinates;
 		updateType();
 		if (trace == null) {
 			blank();
@@ -291,7 +310,8 @@ public class WatchRow {
 	public void setDataType(DataType dataType) {
 		this.typePath = dataType == null ? null : dataType.getPathName();
 		this.dataType = dataType;
-		valueString = parseAsDataType();
+		valueString = parseAsDataTypeStr();
+		valueObj = parseAsDataTypeObj();
 		provider.contextChanged();
 	}
 
@@ -327,8 +347,12 @@ public class WatchRow {
 				Utils.bytesToBigInteger(value, value.length, language.isBigEndian(), false);
 			return "0x" + asBigInt.toString(16);
 		}
-		if (value.length > 20) {
-			return "{ " + NumericUtilities.convertBytesToString(value, 0, 20, " ") + " ... }";
+		if (value.length > TRUNCATE_BYTES_LENGTH) {
+			// TODO: I'd like this not to affect the actual value, just the display
+			//   esp., since this will be the "value" when starting to edit.
+			return "{ " +
+				NumericUtilities.convertBytesToString(value, 0, TRUNCATE_BYTES_LENGTH, " ") +
+				" ... }";
 		}
 		return "{ " + NumericUtilities.convertBytesToString(value, " ") + " }";
 	}
@@ -343,6 +367,103 @@ public class WatchRow {
 
 	public String getValueString() {
 		return valueString;
+	}
+
+	public Object getValueObj() {
+		return valueObj;
+	}
+	
+	public boolean isValueEditable() {
+		return address != null && provider.isEditsEnabled();
+	}
+
+	public void setRawValueString(String valueString) {
+		valueString = valueString.trim();
+		if (valueString.startsWith("{")) {
+			if (!valueString.endsWith("}")) {
+				throw new NumberFormatException("Byte array values must be hex enclosed in {}");
+			}
+
+			setRawValueBytesString(valueString.substring(1, valueString.length() - 1));
+			return;
+		}
+
+		setRawValueIntString(valueString);
+	}
+
+	public void setRawValueBytesString(String bytesString) {
+		setRawValueBytes(NumericUtilities.convertStringToBytes(bytesString));
+	}
+
+	public void setRawValueIntString(String intString) {
+		intString = intString.trim();
+		final BigInteger val;
+		if (intString.startsWith("0x")) {
+			val = new BigInteger(intString.substring(2), 16);
+		}
+		else {
+			val = new BigInteger(intString, 10);
+		}
+		setRawValueBytes(
+			Utils.bigIntegerToBytes(val, value.length, trace.getBaseLanguage().isBigEndian()));
+	}
+
+	public void setRawValueBytes(byte[] bytes) {
+		if (address == null) {
+			throw new IllegalStateException("Cannot write to watch variable without an address");
+		}
+		if (bytes.length != value.length) {
+			throw new IllegalArgumentException("Byte array values must match length of variable");
+		}
+
+		// Allow writes to unmappable registers to fall through to trace
+		// However, attempts to write "weird" register addresses is forbidden
+		if (coordinates.isAliveAndPresent() && coordinates.getRecorder()
+				.isVariableOnTarget(coordinates.getThread(), address, bytes.length)) {
+			coordinates.getRecorder()
+					.writeVariable(coordinates.getThread(), coordinates.getFrame(), address, bytes)
+					.exceptionally(ex -> {
+						Msg.showError(this, null, "Write Failed",
+							"Could not modify watch value (on target)", ex);
+						return null;
+					});
+			// NB: if successful, recorder will write to trace
+			return;
+		}
+
+		/*try (UndoableTransaction tid =
+			UndoableTransaction.start(trace, "Write watch at " + address, true)) {
+			final TraceMemorySpace space;
+			if (address.isRegisterAddress()) {
+				space = trace.getMemoryManager()
+						.getMemoryRegisterSpace(coordinates.getThread(), coordinates.getFrame(),
+							true);
+			}
+			else {
+				space = trace.getMemoryManager().getMemorySpace(address.getAddressSpace(), true);
+			}
+			space.putBytes(coordinates.getViewSnap(), address, ByteBuffer.wrap(bytes));
+		}*/
+		TraceSchedule time =
+			coordinates.getTime().patched(coordinates.getThread(), generateSleigh(bytes));
+		provider.goToTime(time);
+	}
+
+	protected String generateSleigh(byte[] bytes) {
+		BigInteger value = Utils.bytesToBigInteger(bytes, bytes.length,
+			trace.getBaseLanguage().isBigEndian(), false);
+		if (address.isMemoryAddress()) {
+			AddressSpace space = address.getAddressSpace();
+			return String.format("*[%s]:%d 0x%s:%d=0x%s",
+				space.getName(), bytes.length,
+				address.getOffsetAsBigInteger().toString(16), space.getPointerSize(),
+				value.toString(16));
+		}
+		Register register = trace.getBaseLanguage().getRegister(address, bytes.length);
+		if (register == null) {
+			throw new AssertionError("Can only modify memory or register");
+		}
+		return String.format("%s=0x%s", register, value.toString(16));
 	}
 
 	public int getValueLength() {

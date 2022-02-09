@@ -20,6 +20,8 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.commons.lang3.StringUtils;
+
 import docking.widgets.fieldpanel.field.*;
 import docking.widgets.fieldpanel.support.*;
 import ghidra.app.util.HelpTopics;
@@ -32,6 +34,7 @@ import ghidra.app.util.viewer.proxy.ProxyObj;
 import ghidra.framework.options.Options;
 import ghidra.framework.options.ToolOptions;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressOverflowException;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.symbol.*;
 import ghidra.program.util.*;
@@ -54,31 +57,31 @@ public class PlateFieldFactory extends FieldFactory {
 	 */
 	private static final int CONTENT_PADDING = 4;
 	private static final String ELLIPSIS = "...";
-	final static String FUNCTION_PLATE_COMMENT = " FUNCTION";
-	final static String THUNK_FUNCTION_PLATE_COMMENT = " THUNK FUNCTION";
-	final static String POINTER_TO_EXTERNAL_FUNCTION_COMMENT = " POINTER to EXTERNAL FUNCTION";
-	final static String POINTER_TO_NONEXTERNAL_FUNCTION_COMMENT = " POINTER to FUNCTION";
-	final static String CASE_PLATE_COMMENT = " CASE";
-	final static String EXT_ENTRY_PLATE_COMMENT = " EXTERNAL ENTRY";
-	final static String DEAD_CODE_PLATE_COMMENT = " DEAD";
-	final static String SUBROUTINE_PLATE_COMMENT = " SUBROUTINE";
-	final static String DEFAULT_PLATE_COMMENT = "  ";
+	public final static String FUNCTION_PLATE_COMMENT = "FUNCTION";
+	private static final String THUNK_FUNCTION_PLATE_COMMENT = "THUNK FUNCTION";
+	private static final String POINTER_TO_EXTERNAL_FUNCTION_COMMENT =
+		"POINTER to EXTERNAL FUNCTION";
+	private static final String POINTER_TO_NONEXTERNAL_FUNCTION_COMMENT = "POINTER to FUNCTION";
+	static final String EXT_ENTRY_PLATE_COMMENT = "EXTERNAL ENTRY";
+	static final String DEAD_CODE_PLATE_COMMENT = "DEAD";
+	static final String SUBROUTINE_PLATE_COMMENT = "SUBROUTINE";
+	static final String DEFAULT_PLATE_COMMENT = "  ";
 
-	final static String GROUP_TITLE = "Format Code";
-	final static String SHOW_SUBROUTINE_PLATES_OPTION =
-		GROUP_TITLE + Options.DELIMITER + "  Show Subroutine Plates";
-	final static String SHOW_FUNCTION_PLATES_OPTION =
-		GROUP_TITLE + Options.DELIMITER + "  Show Function Plates";
-	final static String SHOW_TRANSITION_PLATES_OPTION =
-		GROUP_TITLE + Options.DELIMITER + "  Show Transition Plates";
-	final static String SHOW_EXT_ENTRY_PLATES_OPTION =
-		GROUP_TITLE + Options.DELIMITER + "  Show External Entry Plates";
+	private static final String GROUP_TITLE = "Format Code";
+	static final String SHOW_SUBROUTINE_PLATES_OPTION =
+		GROUP_TITLE + Options.DELIMITER + "Show Subroutine Plates";
+	static final String SHOW_FUNCTION_PLATES_OPTION =
+		GROUP_TITLE + Options.DELIMITER + "Show Function Plates";
+	static final String SHOW_TRANSITION_PLATES_OPTION =
+		GROUP_TITLE + Options.DELIMITER + "Show Transition Plates";
+	static final String SHOW_EXT_ENTRY_PLATES_OPTION =
+		GROUP_TITLE + Options.DELIMITER + "Show External Entry Plates";
 
-	final static String LINES_BEFORE_FUNCTIONS_OPTION =
+	static final String LINES_BEFORE_FUNCTIONS_OPTION =
 		GROUP_TITLE + Options.DELIMITER + "Lines Before Functions";
-	final static String LINES_BEFORE_LABELS_OPTION =
+	static final String LINES_BEFORE_LABELS_OPTION =
 		GROUP_TITLE + Options.DELIMITER + "Lines Before Labels";
-	final static String LINES_BEFORE_PLATES_OPTION =
+	static final String LINES_BEFORE_PLATES_OPTION =
 		GROUP_TITLE + Options.DELIMITER + "Lines Before Plates";
 
 	private boolean initialized;
@@ -88,7 +91,6 @@ public class PlateFieldFactory extends FieldFactory {
 	private boolean showSubroutinePlates;
 	private boolean showTransitionPlates;
 	private boolean showExternalPlates;
-//    private boolean showCasePlates;
 
 	private boolean showExternalFunctionPointerPlates;
 	private boolean showNonExternalFunctionPointerPlates;
@@ -98,9 +100,6 @@ public class PlateFieldFactory extends FieldFactory {
 	private int nLinesBeforePlates;
 	private boolean isWordWrap;
 
-	/**
-	 * Constructor
-	 */
 	public PlateFieldFactory() {
 		super(FIELD_NAME);
 	}
@@ -117,7 +116,6 @@ public class PlateFieldFactory extends FieldFactory {
 		super(FIELD_NAME, model, hlProvider, displayOptions, fieldOptions);
 		init(fieldOptions);
 
-//		showCasePlates = fieldOptions.getBoolean(name, SHOW_CASE_PLATES_OPTION, false);
 		isWordWrap = fieldOptions.getBoolean(ENABLE_WORD_WRAP_MSG, false);
 		showExternalPlates = fieldOptions.getBoolean(SHOW_EXT_ENTRY_PLATES_OPTION, false);
 		showFunctionPlates = fieldOptions.getBoolean(SHOW_FUNCTION_PLATES_OPTION, true);
@@ -141,25 +139,19 @@ public class PlateFieldFactory extends FieldFactory {
 		}
 
 		CodeUnit cu = (CodeUnit) proxy.getObject();
-		List<FieldElement> elementList = new ArrayList<>(10);
 		boolean isClipped = false;
+		List<FieldElement> elements = new ArrayList<>();
 		String commentText = getCommentText(cu);
-		if ((commentText == null) || (commentText.isEmpty())) {
-			generateDefaultPlate(elementList, cu);
+		if (StringUtils.isBlank(commentText)) {
+			getDefaultFieldElements(cu, elements);
 		}
 		else {
-			isClipped = generateFormattedPlateComment(elementList, cu);
+			isClipped = getFormattedFieldElements(cu, elements);
 		}
 
-		addBlankLines(elementList, cu);
-
-		if (elementList.size() == 0) {
-			// no real or default comment
-			return null;
+		if (elements.isEmpty()) {
+			return null; // no real or default comments
 		}
-
-		FieldElement[] fields = new FieldElement[elementList.size()];
-		elementList.toArray(fields);
 
 		if (isNestedDataAtSameAddressAsParent(proxy)) {
 			// This is data at the same address as the parent, which happens with the first
@@ -169,8 +161,29 @@ public class PlateFieldFactory extends FieldFactory {
 		}
 
 		PlateFieldTextField textField =
-			new PlateFieldTextField(fields, this, proxy, startX, width, commentText, isClipped);
+			new PlateFieldTextField(elements, this, proxy, startX, width, commentText, isClipped);
 		return new PlateListingTextField(proxy, textField);
+	}
+
+	private boolean getFormattedFieldElements(CodeUnit cu, List<FieldElement> elements) {
+
+		int numberBlankLines = getNumberBlankLines(cu, true);
+
+		addBlankLines(elements, numberBlankLines, cu);
+
+		String[] comments = cu.getCommentAsArray(CodeUnit.PLATE_COMMENT);
+		return generateFormattedPlateComment(elements, comments, cu.getProgram());
+	}
+
+	private void getDefaultFieldElements(CodeUnit cu, List<FieldElement> elements) {
+
+		int numberBlankLines = getNumberBlankLines(cu, true);
+		addBlankLines(elements, numberBlankLines, cu);
+
+		String defaultComment = getDefaultComment(cu);
+		if (defaultComment != null) {
+			generateDefaultPlate(elements, defaultComment);
+		}
 	}
 
 	private boolean isNestedDataAtSameAddressAsParent(ProxyObj<?> proxy) {
@@ -203,93 +216,48 @@ public class PlateFieldFactory extends FieldFactory {
 		return buffy.toString();
 	}
 
-	/**
+	/*
 	 * Creates desired FieldElements and puts them in the given list.  Returns true if any of the
 	 * data is clipped because it is too long to display.
-	 *
-	 * @param elementList the list into which the created data will be placed.
-	 * @param cu the code unit for which a plate comment will be generated
-	 * @return true if the data is clipped
 	 */
-	private boolean generateFormattedPlateComment(List<FieldElement> elementList, CodeUnit cu) {
-		String[] comments = cu.getCommentAsArray(CodeUnit.PLATE_COMMENT);
-		if ((comments == null) || (comments.length == 0)) {
+	private boolean generateFormattedPlateComment(List<FieldElement> elements, String[] comments,
+			Program p) {
+		if (comments == null || comments.length == 0) {
 			return false;
 		}
 
-		Program program = cu.getProgram();
 		AttributedString prototype = new AttributedString(EMPTY_STRING, color, getMetrics());
 
-		for (int i = 0; i < comments.length; i++) {
-			elementList
-					.add(CommentUtils.parseTextForAnnotations(comments[i], program, prototype, i));
-		}
-
-		if (isWordWrap) {
-			elementList = FieldUtils.wordWrapList(new CompositeFieldElement(elementList), width);
-		}
-
-		return addBorder(elementList);
-	}
-
-	private void addBlankLines(List<FieldElement> elementList, CodeUnit cu) {
-		AttributedString prototype = new AttributedString(EMPTY_STRING, color, getMetrics());
-		FieldElement blankLine = new TextFieldElement(prototype, 0, 0);
-		int numBlankLines = getNumberBlankLines(cu, elementList.size() > 0);
-		for (int i = 0; i < numBlankLines; i++) {
-			elementList.add(0, blankLine);
-		}
-	}
-
-	private int getNumberBlankLines(CodeUnit cu, boolean hasPlate) {
-		if (cu.getProgram().getListing().getFunctionAt(cu.getMinAddress()) != null) {
-			if (nLinesBeforeFunctions != 0) {
-				return nLinesBeforeFunctions;
-			}
-		}
-
-		if (hasPlate && nLinesBeforePlates != 0) {
-			return nLinesBeforePlates;
-		}
-
-		if (cu.getLabel() != null) {
-			return nLinesBeforeLabels;
-		}
-
-		return 0;
-	}
-
-	private boolean addBorder(List<FieldElement> elements) {
 		AttributedString asteriscs = getStarsString();
-		boolean isClipped = addSideBorders(elements);
-		elements.add(0, new TextFieldElement(asteriscs, 0, 0));
-		elements.add(new TextFieldElement(asteriscs, elements.size(), 0));
+		int row = elements.size();
+
+		// add top border
+		elements.add(new TextFieldElement(asteriscs, row++, 0));
+
+		// add and word wrap the comments
+		List<FieldElement> commentsList = new ArrayList<>();
+		for (String c : comments) {
+			commentsList.add(CommentUtils.parseTextForAnnotations(c, p, prototype, row++));
+		}
+		if (isWordWrap) {
+			commentsList = FieldUtils.wordWrapList(new CompositeFieldElement(commentsList), width);
+		}
+		boolean isClipped = addSideBorders(commentsList);
+		elements.addAll(commentsList);
+
+		// add bottom border
+		elements.add(new TextFieldElement(asteriscs, row++, 0));
+
 		return isClipped;
 	}
 
-	/**
-	 * Generate a text line for the plate text.
-	 * Text will be left justified between two '*' and padded based upon the
-	 * available field width.
-	 * @param elements the field elements that may get updated
-	 * @return formatted plate text line
-	 */
-	private boolean addSideBorders(List<FieldElement> elements) {
+	private boolean addSideBorders(List<FieldElement> comments) {
 		boolean isClipped = false;
-		if (elements.size() == 1) {
-			FieldElement element = elements.get(0);
-			if (element.length() > 1 && element.charAt(0) == ' ') {
-				FieldElementResult result = addSideBorder(element.substring(1), 1, true);
-				isClipped = result.isClipped();
-				elements.set(0, result.getFieldElement());
-				return isClipped;
-			}
-		}
 
-		for (int i = 0; i < elements.size(); i++) {
-			FieldElementResult result = addSideBorder(elements.get(i), i + 1, false);
+		for (int i = 0; i < comments.size(); i++) {
+			FieldElementResult result = addSideBorder(comments.get(i), i, false);
 			isClipped |= result.isClipped();
-			elements.set(i, result.getFieldElement());
+			comments.set(i, result.getFieldElement());
 		}
 		return isClipped;
 	}
@@ -314,7 +282,7 @@ public class PlateFieldFactory extends FieldFactory {
 		int prePadding = center ? totalPadding / 2 : 0;
 		int postPadding = center ? (totalPadding + 1) / 2 : totalPadding;
 
-		StringBuffer buffy = new StringBuffer();
+		StringBuilder buffy = new StringBuilder();
 		buffy.append('*').append(' ');
 		addPadding(buffy, prePadding);
 
@@ -338,19 +306,56 @@ public class PlateFieldFactory extends FieldFactory {
 			ellipsisLength > 0);
 	}
 
-	private void addPadding(StringBuffer buf, int count) {
+	private void addPadding(StringBuilder buf, int count) {
 		for (int i = 0; i < count; i++) {
 			buf.append(' ');
 		}
 	}
 
-	private void generateDefaultPlate(List<FieldElement> elementList, CodeUnit cu) {
-		String defaultComment = getDefaultComment(cu);
-		if (defaultComment != null) {
-			AttributedString as = new AttributedString(defaultComment, color, getMetrics());
-			elementList.add(new TextFieldElement(as, 0, 0));
-			addBorder(elementList);
+	private void addBlankLines(List<FieldElement> elements, int numberBlankLines, CodeUnit cu) {
+		AttributedString prototype = new AttributedString(EMPTY_STRING, color, getMetrics());
+		for (int row = 0; row < numberBlankLines; row++) {
+			elements.add(0, new TextFieldElement(prototype, row, 0));
 		}
+	}
+
+	private int getNumberBlankLines(CodeUnit cu, boolean hasPlate) {
+		if (cu.getProgram().getListing().getFunctionAt(cu.getMinAddress()) != null) {
+			if (nLinesBeforeFunctions != 0) {
+				return nLinesBeforeFunctions;
+			}
+		}
+
+		if (hasPlate && nLinesBeforePlates != 0) {
+			return nLinesBeforePlates;
+		}
+
+		if (cu.getLabel() != null) {
+			return nLinesBeforeLabels;
+		}
+
+		return 0;
+	}
+
+	private void generateDefaultPlate(List<FieldElement> elements, String defaultComment) {
+		if (defaultComment == null) {
+			return;
+		}
+
+		AttributedString asteriscs = getStarsString();
+		int row = elements.size(); // blank lines
+
+		// top border
+		elements.add(new TextFieldElement(asteriscs, row++, 0));
+
+		int commentRow = row++;
+		AttributedString as = new AttributedString(defaultComment, color, getMetrics());
+		TextFieldElement commentElement = new TextFieldElement(as, commentRow, 0);
+		FieldElementResult result = addSideBorder(commentElement, commentRow, true);
+		elements.add(result.getFieldElement());
+
+		// bottom border
+		elements.add(new TextFieldElement(asteriscs, row++, 0));
 	}
 
 	private String getDefaultComment(CodeUnit cu) {
@@ -369,11 +374,6 @@ public class PlateFieldFactory extends FieldFactory {
 		if (showSubroutinePlates && hasCallReferences(cu)) {
 			return SUBROUTINE_PLATE_COMMENT;
 		}
-
-//		TODO handle case statements?
-//		if (showCasePlates) {
-//			return CASE_PLATE_COMMENT;
-//		}
 
 		if (showTransitionPlates) {
 			if (isDeadCode(cu)) {
@@ -435,7 +435,7 @@ public class PlateFieldFactory extends FieldFactory {
 		int n = width / starWidth;
 
 		if (stars.length() != n) {
-			StringBuffer buf = new StringBuffer();
+			StringBuilder buf = new StringBuilder();
 			for (int i = 0; i < n; i++) {
 				buf.append('*');
 			}
@@ -446,13 +446,15 @@ public class PlateFieldFactory extends FieldFactory {
 
 	@Override
 	public ProgramLocation getProgramLocation(int row, int col, ListingField listingField) {
-		Object proxyObject = listingField.getProxy().getObject();
+
 		// if on a function, get the code unit there.
+		Object proxyObject = listingField.getProxy().getObject();
 		if (proxyObject instanceof Function) {
 			Function func = (Function) proxyObject;
 			Listing listing = func.getProgram().getListing();
 			proxyObject = listing.getCodeUnitAt(func.getEntryPoint());
 		}
+
 		if (!(proxyObject instanceof CodeUnit)) {
 			return null;
 		}
@@ -468,18 +470,18 @@ public class PlateFieldFactory extends FieldFactory {
 			((ListingTextField) listingField).screenToDataLocation(row, col);
 
 		//
-		// The 'row' value is an offset from the top of the plate comment, which has 0 or
-		// more blank lines at the top, followed by a line of asterisks.
+		// The 'row' value includes blank lines and header decoration lines.  The 'commentRow' used
+		// below is the index into the list of comments.  Calculate the comment beginning by
+		// removing the non-comment lines.
 		//
 		int fillerLineCount = getNumberOfLeadingFillerLines(listingField);
-
 		int commentRow = row - fillerLineCount;
-		if (commentRow >= comments.length) {
-			commentRow = -1; // clicked the bottom  decoration line
+		if (commentRow >= comments.length || commentRow < 0) {
+			commentRow = -1; // clicked above the comment or the bottom decoration line
 		}
 
 		return new PlateFieldLocation(cu.getProgram(), ((CodeUnit) proxyObject).getMinAddress(),
-			cpath, dataLocation.row(), dataLocation.col(), comments, commentRow);
+			cpath, commentRow, dataLocation.col(), comments, commentRow);
 	}
 
 	private int getNumberOfLeadingFillerLines(ListingField listingField) {
@@ -494,6 +496,7 @@ public class PlateFieldFactory extends FieldFactory {
 	@Override
 	public FieldLocation getFieldLocation(ListingField listingField, BigInteger index, int fieldNum,
 			ProgramLocation programLoc) {
+
 		if (!(programLoc instanceof CommentFieldLocation)) {
 			return null;
 		}
@@ -510,8 +513,40 @@ public class PlateFieldFactory extends FieldFactory {
 			return null;
 		}
 
+		/*
+		 	Calculate the data row using the model row provided in the location, along with
+		 	compensating for any spacing and plate comment decorations.   For example, for this
+		 	comment,
+		 	
+		 		This is line one
+		 		This is line two
+		 		
+		 	the plate comment may look like this
+		 	
+		 		(blank line)
+		 		****************************
+		 		* This is line one
+		 		* This is line two
+		 		*****************************
+		 */
+
+		CodeUnit cu = (CodeUnit) obj;
+		String commentText = getCommentText(cu);
+		boolean hasComment = true;
+		if (StringUtils.isBlank(commentText)) {
+			String defaultComment = getDefaultComment(cu);
+			if (defaultComment == null) {
+				hasComment = false;
+			}
+		}
+
+		int commentRow = commentLocation.getRow();
+		int numberBlankLines = getNumberBlankLines(cu, hasComment);
+		int headerCount = hasComment ? 1 : 0;
+		int dataRow = commentRow + numberBlankLines + headerCount;
+
 		ListingTextField listingTextField = (ListingTextField) listingField;
-		RowColLocation location = listingTextField.dataToScreenLocation(commentLocation.getRow(),
+		RowColLocation location = listingTextField.dataToScreenLocation(dataRow,
 			commentLocation.getCharOffset());
 		return new FieldLocation(index, fieldNum, location.row(), location.col());
 	}
@@ -617,7 +652,7 @@ public class PlateFieldFactory extends FieldFactory {
 			Address prevAddr = cu.getMinAddress().subtractNoWrap(1);
 			return cu.getProgram().getListing().getCodeUnitContaining(prevAddr);
 		}
-		catch (Exception e) {
+		catch (AddressOverflowException e) {
 			// we are just being lazy and not validating before doing the subtract--SOCK!
 		}
 		return null;
@@ -641,12 +676,6 @@ public class PlateFieldFactory extends FieldFactory {
 		}
 		initialized = true;
 
-		StringBuffer sb = new StringBuffer();
-		sb.append("\n");
-		for (int i = 0; i < 19; i++) {
-			sb.append("|");
-		}
-
 		HelpLocation help = new HelpLocation(HelpTopics.CODE_BROWSER, "Format_Code");
 		options.getOptions(GROUP_TITLE).setOptionsHelpLocation(help);
 
@@ -662,8 +691,6 @@ public class PlateFieldFactory extends FieldFactory {
 			"Toggle for whether a plate comment should be displayed for subroutines.");
 		options.registerOption(SHOW_FUNCTION_PLATES_OPTION, true, help,
 			"Toggle for whether a plate comment should be displayed for functions.");
-//		options.registerOption(SHOW_CASE_PLATES_OPTION,false, help,
-//			"Toggle for whether a plate comment should be displayed for a case statement.");
 		options.registerOption(SHOW_TRANSITION_PLATES_OPTION, false, help,
 			"Toggle for whether a plate comment should be displayed for a change " +
 				"in the flow type between instructions, when data follows " +
@@ -690,9 +717,9 @@ public class PlateFieldFactory extends FieldFactory {
 // Inner Classes
 //==================================================================================================
 
-	private class PlateListingTextField extends ListingTextField {
+	class PlateListingTextField extends ListingTextField {
 
-		protected PlateListingTextField(ProxyObj<?> proxy, PlateFieldTextField field) {
+		PlateListingTextField(ProxyObj<?> proxy, PlateFieldTextField field) {
 			super(PlateFieldFactory.this, proxy, field);
 		}
 
@@ -701,12 +728,12 @@ public class PlateFieldFactory extends FieldFactory {
 		}
 	}
 
-	private class PlateFieldTextField extends VerticalLayoutTextField {
+	class PlateFieldTextField extends VerticalLayoutTextField {
 
 		private boolean isCommentClipped;
 		private String commentText;
 
-		public PlateFieldTextField(FieldElement[] textElements, PlateFieldFactory factory,
+		PlateFieldTextField(List<FieldElement> textElements, PlateFieldFactory factory,
 				ProxyObj<?> proxy, int startX, int width, String commentText,
 				boolean isCommentClipped) {
 			super(textElements, startX, width, Integer.MAX_VALUE,
@@ -722,20 +749,26 @@ public class PlateFieldFactory extends FieldFactory {
 
 		@Override
 		public String getTextWithLineSeparators() {
+			// note: this is the comment text which will be blank for default plate comments
 			return commentText;
+		}
+
+		@Override
+		protected List<String> getLines() {
+			// open up access for testing
+			return super.getLines();
 		}
 
 		int getLeadingFillerLineCount() {
 			int count = 0;
 
-			for (Field field : subFields) {
-				String text = field.getText().trim();
+			for (String line : getLines()) {
 				count++;
-				if (text.isEmpty()) {
+				if (line.isEmpty()) {
 					continue; // skip leading blank lines
 				}
 
-				if (text.startsWith("*")) {
+				if (line.startsWith("*")) {
 					break;
 				}
 			}

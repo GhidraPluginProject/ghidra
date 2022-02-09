@@ -40,8 +40,7 @@ public class EnumDataTypeHTMLRepresentation extends HTMLDataTypeRepresentation {
 
 	// private constructor for making diff copies
 	private EnumDataTypeHTMLRepresentation(Enum enumDataType, List<ValidatableLine> headerLines,
-			TextLine displayName,
-			List<ValidatableLine> bodyContent, TextLine footerLine) {
+			TextLine displayName, List<ValidatableLine> bodyContent, TextLine footerLine) {
 		this.enumDataType = enumDataType;
 		this.headerContent = headerLines;
 		this.displayName = displayName;
@@ -101,19 +100,28 @@ public class EnumDataTypeHTMLRepresentation extends HTMLDataTypeRepresentation {
 		List<ValidatableLine> list = new ArrayList<>(values.length);
 		for (long value : values) {
 
-			String name = enumDataType.getName(value);
-			if (trim) {
-				name = StringUtilities.trimMiddle(name, ToolTipUtils.LINE_LENGTH);
-			}
+			String[] names = enumDataType.getNames(value);
+			for (String name : names) {
+				if (trim) {
+					name = StringUtilities.trimMiddle(name, ToolTipUtils.LINE_LENGTH);
+				}
 
-			String hexString = Long.toHexString(value);
-			if (value < 0) {
-				// Long will print leading FF for 8 bytes, regardless of enum size.  Keep only
-				// n bytes worth of text.  For example, when n is 2, turn FFFFFFFFFFFFFF12 into FF12
-				int length = hexString.length();
-				hexString = hexString.substring(length - (n * 2));
+				String hexString = Long.toHexString(value);
+				if (value < 0) {
+					// Long will print leading FF for 8 bytes, regardless of enum size.  Keep only
+					// n bytes worth of text.  For example, when n is 2, turn FFFFFFFFFFFFFF12 into
+					// FF12
+					int length = hexString.length();
+					hexString = hexString.substring(length - (n * 2));
+				}
+
+				String comment = enumDataType.getComment(name);
+				if (trim && comment != null) {
+					comment = StringUtilities.trim(comment, ToolTipUtils.LINE_LENGTH);
+				}
+
+				list.add(new TextLine(name + " = 0x" + hexString + "    " + comment));
 			}
-			list.add(new TextLine(name + " = 0x" + hexString));
 		}
 
 		return list;
@@ -147,7 +155,7 @@ public class EnumDataTypeHTMLRepresentation extends HTMLDataTypeRepresentation {
 		displayNameText = HTMLUtilities.friendlyEncodeHTML(displayNameText);
 		displayNameText = wrapStringInColor(displayNameText, displayName.getTextColor());
 		//@formatter:off
-		append(fullHtml, truncatedHtml, lineCount, TT_OPEN, 
+		append(fullHtml, truncatedHtml, lineCount, TT_OPEN,
                                                    displayNameText,
                                                    TT_CLOSE,
                                                    HTML_SPACE,
@@ -192,8 +200,8 @@ public class EnumDataTypeHTMLRepresentation extends HTMLDataTypeRepresentation {
 		return fullHtml.toString();
 	}
 
-	private static void append(StringBuilder fullHtml, StringBuilder truncatedHtml,
-			int lineCount, String... content) {
+	private static void append(StringBuilder fullHtml, StringBuilder truncatedHtml, int lineCount,
+			String... content) {
 
 		for (String string : content) {
 			fullHtml.append(string);
@@ -247,8 +255,7 @@ public class EnumDataTypeHTMLRepresentation extends HTMLDataTypeRepresentation {
 				diffDisplayName, bodyDiff.getLeftLines(), footerLine),
 			new EnumDataTypeHTMLRepresentation(enumRepresentation.enumDataType,
 				headerDiff.getRightLines(), otherDiffDisplayName, bodyDiff.getRightLines(),
-				enumRepresentation.footerLine)
-		};
+				enumRepresentation.footerLine) };
 	}
 
 }

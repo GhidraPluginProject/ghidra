@@ -86,9 +86,9 @@ class PluginManager {
 		addPlugins(new Plugin[] { plugin });
 	}
 
-	void addPlugins(String[] classNames) throws PluginException {
+	void addPlugins(List<String> classNames) throws PluginException {
 		PluginException pe = null;
-		List<Plugin> list = new ArrayList<>(classNames.length);
+		List<Plugin> list = new ArrayList<>(classNames.size());
 		List<String> badList = new ArrayList<>();
 		for (String className : classNames) {
 			try {
@@ -115,8 +115,7 @@ class PluginManager {
 		}
 		if (badList.size() > 0) {
 			//EventManager eventMgr = tool.getEventManager
-			for (int i = 0; i < badList.size(); i++) {
-				String className = badList.get(i);
+			for (String className : badList) {
 				// remove from event manager
 				tool.removeEventListener(className);
 			}
@@ -192,7 +191,7 @@ class PluginManager {
 		if (badList.size() > 0) {
 			Plugin[] badPlugins = new Plugin[badList.size()];
 			try {
-				removePlugins(badList.toArray(badPlugins));
+				removePlugins(badList);
 			}
 			catch (Throwable t) {
 				log.debug("Exception unloading plugin", t);
@@ -229,7 +228,7 @@ class PluginManager {
 	 * depending on them.
 	 * @param plugins the list of plugins to remove.
 	 */
-	void removePlugins(Plugin[] plugins) {
+	void removePlugins(List<Plugin> plugins) {
 		for (Plugin plugin : plugins) {
 			unregisterPlugin(plugin);
 		}
@@ -268,7 +267,7 @@ class PluginManager {
 
 		PluginException pe = null;
 		try {
-			addPlugins(classNames.toArray(new String[classNames.size()]));
+			addPlugins(classNames);
 		}
 		catch (PluginException e) {
 			pe = e;
@@ -367,8 +366,7 @@ class PluginManager {
 
 	Element saveDataStateToXml(boolean savingProject) {
 		Element root = new Element("DATA_STATE");
-		for (int i = 0; i < pluginList.size(); i++) {
-			Plugin p = pluginList.get(i);
+		for (Plugin p : pluginList) {
 			SaveState ss = new SaveState("PLUGIN");
 			p.writeDataState(ss);
 			if (!ss.isEmpty()) {
@@ -496,34 +494,35 @@ class PluginManager {
 	}
 
 	private void initConfigStates(Map<String, SaveState> map) throws PluginException {
-		StringBuffer errMsg = new StringBuffer();
+		StringBuilder errMsg = new StringBuilder();
 		Iterator<Plugin> it = pluginList.iterator();
 		while (it.hasNext()) {
 			Plugin p = it.next();
-			configure(p, map, errMsg);
+			readSaveState(p, map, errMsg);
 		}
 		if (errMsg.length() > 0) {
 			throw new PluginException(errMsg.toString());
 		}
 	}
 
-	private void configure(Plugin p, Map<String, SaveState> map, StringBuffer errMsg) {
+	private void readSaveState(Plugin p, Map<String, SaveState> map, StringBuilder errMsg) {
 		SaveState ss = map.get(p.getClass().getName());
-		if (ss != null) {
-			try {
-				p.readConfigState(ss);
+		if (ss == null) {
+			return;
+		}
+
+		try {
+			p.readConfigState(ss);
+		}
+		catch (Exception e) {
+			errMsg.append("Problem restoring plugin state for: " + p.getName()).append("\n\n");
+			errMsg.append(e.getClass().getName()).append(": ").append(e.getMessage()).append('\n');
+			StackTraceElement[] st = e.getStackTrace();
+			int depth = Math.min(5, st.length); // only show the important stuff (magic guess)
+			for (int j = 0; j < depth; j++) {
+				errMsg.append("    ").append(st[j].toString()).append('\n');
 			}
-			catch (Exception e) {
-				errMsg.append("Problem restoring plugin state for: " + p.getName()).append("\n\n");
-				errMsg.append(e.getClass().getName()).append(": ").append(e.getMessage()).append(
-					'\n');
-				StackTraceElement[] st = e.getStackTrace();
-				int depth = Math.min(5, st.length); // only show the important stuff (magic guess)
-				for (int j = 0; j < depth; j++) {
-					errMsg.append("    ").append(st[j].toString()).append('\n');
-				}
-				errMsg.append('\n'); // extra break between this and future messages
-			}
+			errMsg.append('\n'); // extra break between this and future messages
 		}
 	}
 

@@ -34,14 +34,15 @@ import ghidra.program.model.symbol.*;
 import ghidra.program.util.ProgramLocation;
 import ghidra.trace.database.DBTrace;
 import ghidra.trace.database.DBTraceUtils;
-import ghidra.trace.database.DBTraceUtils.DecodesAddresses;
+import ghidra.trace.database.address.DBTraceOverlaySpaceAdapter;
+import ghidra.trace.database.address.DBTraceOverlaySpaceAdapter.DecodesAddresses;
 import ghidra.trace.database.program.DBTraceProgramView;
 import ghidra.trace.database.symbol.DBTraceSymbolManager.DBTraceSymbolIDEntry;
 import ghidra.trace.database.symbol.DBTraceSymbolManager.MySymbolTypes;
-import ghidra.trace.database.thread.DBTraceThread;
 import ghidra.trace.model.Trace.TraceSymbolChangeType;
 import ghidra.trace.model.TraceAddressSnapRange;
 import ghidra.trace.model.symbol.TraceSymbol;
+import ghidra.trace.model.thread.TraceThread;
 import ghidra.trace.util.TraceAddressSpace;
 import ghidra.trace.util.TraceChangeRecord;
 import ghidra.util.LockHold;
@@ -60,6 +61,7 @@ public abstract class AbstractDBTraceSymbol extends DBAnnotatedObject
 	private static final byte SOURCE_CLEAR = ~(SOURCE_MASK << SOURCE_SHIFT);
 
 	private static final byte PRIMARY_MASK = 0x10;
+	@SuppressWarnings("unused")
 	private static final int PRIMARY_CLEAR = ~PRIMARY_MASK;
 
 	static final String NAME_COLUMN_NAME = "Name";
@@ -160,8 +162,8 @@ public abstract class AbstractDBTraceSymbol extends DBAnnotatedObject
 	}
 
 	@Override
-	public Address decodeAddress(int spaceId, long offset) {
-		return manager.trace.getBaseAddressFactory().getAddress(spaceId, offset);
+	public DBTraceOverlaySpaceAdapter getOverlaySpaceAdapter() {
+		return manager.overlayAdapter;
 	}
 
 	@Override
@@ -170,7 +172,7 @@ public abstract class AbstractDBTraceSymbol extends DBAnnotatedObject
 	}
 
 	@Override
-	public DBTraceThread getThread() {
+	public TraceThread getThread() {
 		return null;
 	}
 

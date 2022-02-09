@@ -17,6 +17,7 @@ package agent.gdb.model.impl;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 
 import agent.gdb.manager.GdbInferior;
 import agent.gdb.manager.GdbThread;
@@ -24,28 +25,29 @@ import ghidra.dbg.util.ShellUtils;
 
 public enum GdbModelImplUtils {
 	;
-	public static CompletableFuture<GdbThread> launch(GdbModelImpl impl, GdbInferior inferior,
-			List<String> args) {
+
+	/**
+	 * Perform the file-args-start sequence to launch a target in an inferior
+	 * 
+	 * @param inferior the inferior to assign the target
+	 * @param args the command-line arguments, including the executable at args[0]
+	 * @param useStarti true to use {@code starti}, false to use {@code start}
+	 * @param postFile a caller-specified routine to execute after the {@code file} part of the
+	 *            sequence. This is useful to grab auto-derived environment information
+	 * @return a future which completes with the initial thread of the target
+	 */
+	public static CompletableFuture<GdbThread> launch(GdbInferior inferior,
+			List<String> args, boolean useStarti, Supplier<CompletableFuture<Void>> postFile) {
 		// Queue all these up to avoid other commands getting between.
 		CompletableFuture<Void> feas = inferior.fileExecAndSymbols(args.get(0));
+		CompletableFuture<Void> post = postFile.get();
 		CompletableFuture<Void> sargs =
 			inferior.setVar("args", ShellUtils.generateLine(args.subList(1, args.size())));
-		CompletableFuture<Void> both = CompletableFuture.allOf(feas, sargs);
-		if (impl.noStarti) {
-			return both.thenCombine(inferior.start(), (__, t) -> t);
-		}
-		else {
-			return both.thenCombine(inferior.starti(), (__, t) -> t).exceptionally(ex -> {
-				impl.noStarti = true;
-				// TODO: Check that the error is actually Undefined command: "starti"
-				return null;
-			}).thenCompose(thread -> {
-				if (thread == null) {
-					return inferior.start();
-				}
-				return CompletableFuture.completedStage(thread);
-			});
-		}
+		CompletableFuture<GdbThread> start = useStarti ? inferior.starti() : inferior.start();
+		return feas
+				.thenCombine(post, (v, t) -> t)
+				.thenCombine(sargs, (v, t) -> t)
+				.thenCombine(start, (v, t) -> t);
 	}
 
 	public static <V> V noDupMerge(V first, V second) {

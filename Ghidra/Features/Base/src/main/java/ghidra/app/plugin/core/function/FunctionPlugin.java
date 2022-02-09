@@ -23,6 +23,7 @@ import ghidra.app.CorePluginPackage;
 import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
 import ghidra.app.cmd.function.SetReturnDataTypeCmd;
 import ghidra.app.context.ListingActionContext;
+import ghidra.app.events.ProgramActivatedPluginEvent;
 import ghidra.app.plugin.PluginCategoryNames;
 import ghidra.app.services.*;
 import ghidra.app.util.AddEditDialog;
@@ -53,7 +54,8 @@ import ghidra.util.task.SwingUpdateManager;
 			"and the variables in them.  Users can change the signature, return type," +
 			"variable names, variable datatypes and comments.",
 	servicesRequired = { ProgramManager.class, DataTypeManagerService.class },
-	servicesProvided = { DataService.class }
+	servicesProvided = { DataService.class },
+	eventsConsumed = { ProgramActivatedPluginEvent.class }
 )
 //@formatter:on
 public class FunctionPlugin extends Plugin implements DataService {
@@ -157,6 +159,13 @@ public class FunctionPlugin extends Plugin implements DataService {
 		if (variableCommentDialog != null) {
 			variableCommentDialog.close();
 			variableCommentDialog = null;
+		}
+	}
+
+	@Override
+	public void processEvent(PluginEvent event) {
+		if (event instanceof ProgramActivatedPluginEvent) {
+			favoritesUpdateManager.updateLater();
 		}
 	}
 
@@ -467,36 +476,9 @@ public class FunctionPlugin extends Plugin implements DataService {
 		return false;
 	}
 
-	/**
-	 * Lay down the specified dataType on a function return, parameter or local variable
-	 * based upon the programActionContext.  Pointer conversion will be handled
-	 * by merging the existing dataType with the specified dataType.
-	 * @param dt The DataType to create.
-	 * @param programActionContext action context
-	 * @param enableConflictHandling if true and specified dataType results in a storage conflict,
-	 * user may be prompted for removal of conflicting variables (not applicable for return type)
-	 */
 	@Override
-	public boolean createData(DataType dt, ListingActionContext programActionContext,
-			boolean enableConflictHandling) {
-		return createData(dt, programActionContext, true, enableConflictHandling);
-	}
-
-	/**
-	 * This method is the same as {@link #createData(DataType, ListingActionContext, boolean)}, 
-	 * except that this method will use the given value of <tt>convertPointers</tt> to determine 
-	 * if the new DataType should be made into a pointer if the existing DataType is a pointer.
-	 * 
-	 * @param dataType the DataType to create
-	 * @param context the context containing the location at which to create the DataType
-	 * @param convertPointers True signals to convert the given DataType to a pointer if there is
-	 *        an existing pointer at the specified location.
-	 * @param promptForConflictRemoval if true and specified dataType results in a storage conflict,
-	 * user may be prompted for removal of conflicting variables (not applicable for return type)
-	 * @return True if the DataType could be created at the given location.
-	 */
 	public boolean createData(DataType dataType, ListingActionContext context,
-			boolean convertPointers, boolean promptForConflictRemoval) {
+			boolean stackPointers, boolean promptForConflictRemoval) {
 		ProgramLocation location = context.getLocation();
 		Program program = context.getProgram();
 		if (!(location instanceof FunctionLocation)) {
@@ -522,7 +504,7 @@ public class FunctionPlugin extends Plugin implements DataService {
 		}
 
 		DataType existingDT = getCurrentDataType(context);
-		dataType = DataUtilities.reconcileAppliedDataType(existingDT, dataType, convertPointers);
+		dataType = DataUtilities.reconcileAppliedDataType(existingDT, dataType, stackPointers);
 
 		if (dataType.getLength() < 0) {
 			tool.setStatusInfo("Only fixed-length data-type permitted");

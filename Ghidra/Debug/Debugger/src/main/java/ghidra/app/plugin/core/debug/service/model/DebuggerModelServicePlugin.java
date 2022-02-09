@@ -314,8 +314,8 @@ public class DebuggerModelServicePlugin extends Plugin
 	}
 
 	@Override
-	public TraceRecorder recordTarget(TargetObject target, DebuggerTargetTraceMapper mapper)
-			throws IOException {
+	public TraceRecorder recordTarget(TargetObject target, DebuggerTargetTraceMapper mapper,
+			ActionSource source) throws IOException {
 		TraceRecorder recorder;
 		// Cannot use computeIfAbsent here
 		// Entry must be present before listeners invoked
@@ -328,7 +328,12 @@ public class DebuggerModelServicePlugin extends Plugin
 			recorder = doBeginRecording(target, mapper);
 			recorder.addListener(listenerOnRecorders);
 			recorder.init().exceptionally(e -> {
-				Msg.showError(this, null, "Record Trace", "Error initializing recorder", e);
+				if (source == ActionSource.MANUAL) {
+					Msg.showError(this, null, "Record Trace", "Error initializing recorder", e);
+				}
+				else {
+					Msg.error(this, "Error initializing recorder", e);
+				}
 				return null;
 			});
 			recordersByTarget.put(target, recorder);
@@ -351,12 +356,12 @@ public class DebuggerModelServicePlugin extends Plugin
 			}
 		}
 		DebuggerTargetTraceMapper mapper =
-			DebuggerMappingOffer.first(DebuggerMappingOpinion.queryOpinions(target));
+			DebuggerMappingOffer.first(DebuggerMappingOpinion.queryOpinions(target, false));
 		if (mapper == null) {
 			throw new NoSuchElementException("No mapper for target: " + target);
 		}
 		try {
-			return recordTarget(target, mapper);
+			return recordTarget(target, mapper, ActionSource.AUTOMATIC);
 		}
 		catch (IOException e) {
 			throw new AssertionError("Could not record target: " + target, e);
@@ -373,24 +378,17 @@ public class DebuggerModelServicePlugin extends Plugin
 				return recorder;
 			}
 		}
-		List<DebuggerMappingOffer> offers = DebuggerMappingOpinion.queryOpinions(target);
-		DebuggerMappingOffer selected;
-		if (offers.size() == 1) {
-			selected = offers.get(0);
+		List<DebuggerMappingOffer> offers = DebuggerMappingOpinion.queryOpinions(target, true);
+		offerDialog.setOffers(offers);
+		t.showDialog(offerDialog);
+		if (offerDialog.isCancelled()) {
+			return null;
 		}
-		else {
-			offerDialog.setOffers(offers);
-			t.showDialog(offerDialog);
-			// TODO: Is cancelled?
-			if (offerDialog.isCancelled()) {
-				return null;
-			}
-			selected = offerDialog.getSelectedOffer();
-		}
+		DebuggerMappingOffer selected = offerDialog.getSelectedOffer();
 		assert selected != null;
 		DebuggerTargetTraceMapper mapper = selected.take();
 		try {
-			return recordTarget(target, mapper);
+			return recordTarget(target, mapper, ActionSource.MANUAL);
 		}
 		catch (IOException e) {
 			throw new AssertionError("Could not record target: " + target, e);
@@ -501,7 +499,7 @@ public class DebuggerModelServicePlugin extends Plugin
 	public TraceRecorder recordTargetAndActivateTrace(TargetObject target,
 			DebuggerTargetTraceMapper mapper, DebuggerTraceManagerService traceManager)
 			throws IOException {
-		TraceRecorder recorder = recordTarget(target, mapper);
+		TraceRecorder recorder = recordTarget(target, mapper, ActionSource.AUTOMATIC);
 		if (traceManager != null) {
 			Trace trace = recorder.getTrace();
 			traceManager.openTrace(trace);

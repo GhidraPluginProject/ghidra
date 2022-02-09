@@ -27,6 +27,8 @@ import ghidra.program.model.lang.InstructionError.InstructionErrorType;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.util.CodeUnitInsertionException;
 import ghidra.trace.database.DBTraceUtils;
+import ghidra.trace.database.context.DBTraceRegisterContextManager;
+import ghidra.trace.database.context.DBTraceRegisterContextSpace;
 import ghidra.trace.database.memory.DBTraceMemorySpace;
 import ghidra.trace.model.ImmutableTraceAddressSnapRange;
 import ghidra.trace.model.Trace.TraceCodeChangeType;
@@ -139,10 +141,8 @@ public class DBTraceInstructionsView extends AbstractBaseDBTraceDefinedUnitsView
 						lastInstruction = replaceIfNotNull(lastInstruction,
 							doAddInstructions(lifespan, delayed.iterator(), true));
 					}
-					else {
-						lastInstruction =
-							doCreateInstruction(lifespan, startAddress, prototype, protoInstr);
-					}
+					lastInstruction =
+						doCreateInstruction(lifespan, startAddress, prototype, protoInstr);
 				}
 				if (errorAddress != null && conflictCodeUnit == null &&
 					errorAddress.compareTo(startAddress) <= 0) {
@@ -156,6 +156,27 @@ public class DBTraceInstructionsView extends AbstractBaseDBTraceDefinedUnitsView
 
 	public DBTraceInstructionsView(DBTraceCodeSpace space) {
 		super(space, space.instructionMapSpace);
+	}
+
+	protected void doSetContexts(TraceAddressSnapRange tasr, Language language,
+			ProcessorContextView context) {
+		Register contextReg = language.getContextBaseRegister();
+		if (contextReg == null || contextReg == Register.NO_CONTEXT) {
+			return;
+		}
+		RegisterValue newValue = context.getRegisterValue(contextReg);
+		DBTraceRegisterContextManager ctxMgr = space.trace.getRegisterContextManager();
+		if (Objects.equals(ctxMgr.getDefaultValue(language, contextReg, tasr.getX1()), newValue)) {
+			DBTraceRegisterContextSpace ctxSpace = ctxMgr.get(space, false);
+			if (ctxSpace == null) {
+				return;
+			}
+			ctxSpace.removeValue(language, contextReg, tasr.getLifespan(), tasr.getRange());
+			return;
+		}
+		DBTraceRegisterContextSpace ctxSpace = ctxMgr.get(space, true);
+		// TODO: Do not save non-flowing context beyond???
+		ctxSpace.setValue(language, newValue, tasr.getLifespan(), tasr.getRange());
 	}
 
 	protected DBTraceInstruction doCreate(Range<Long> lifespan, Address address,
@@ -188,6 +209,8 @@ public class DBTraceInstructionsView extends AbstractBaseDBTraceDefinedUnitsView
 			// TODO: Figure out the conflicting unit or snap boundary?
 			throw new CodeUnitInsertionException("Code units cannot overlap");
 		}
+
+		doSetContexts(tasr, prototype.getLanguage(), context);
 
 		DBTraceInstruction created = space.instructionMapSpace.put(tasr, null);
 		created.set(prototype, context);
